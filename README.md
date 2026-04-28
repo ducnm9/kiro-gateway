@@ -888,15 +888,21 @@ This project is not affiliated with, endorsed by, or sponsored by Amazon Web Ser
 
 ---
 
-# Bước 1: Cài mkcert và tạo cert (chỉ cần làm 1 lần)
+# Bước 1: Cài mkcert và tạo cert (chỉ cần làm 1 lần) FOR MAC
 
+```terminal
 brew install mkcert
 mkcert -install
 mkdir -p certs
 mkcert -cert-file certs/cert.pem -key-file certs/key.pem localhost 127.0.0.1
+```
 
 # Bước 2: Restart
 
+```terminal
 docker-compose down && docker-compose up -d
+```
 
-Note: change localhost to custom domain (test.local) and edit /etc/host add 127.0.0.1 test.local
+## ⚠️ Note:
+
+change localhost to custom domain (test.local) and edit /etc/host add 127.0.0.1 test.local
