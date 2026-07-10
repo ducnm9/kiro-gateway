@@ -86,9 +86,16 @@ def setup_test_environment(tmp_path_factory):
     import kiro.config
     original_creds_file = kiro.config.ACCOUNTS_CONFIG_FILE
     original_state_file = kiro.config.ACCOUNTS_STATE_FILE
+    original_proxy_api_key = kiro.config.PROXY_API_KEY
+    original_rate_limit_enabled = kiro.config.RATE_LIMIT_ENABLED
     
     kiro.config.ACCOUNTS_CONFIG_FILE = str(creds_file)
     kiro.config.ACCOUNTS_STATE_FILE = str(tmp_dir / "state.json")
+    # Set a test API key (config no longer has a default for security)
+    if not kiro.config.PROXY_API_KEY:
+        kiro.config.PROXY_API_KEY = "test_proxy_api_key_for_tests"
+    # Disable rate limiting in tests to avoid 429 interference
+    kiro.config.RATE_LIMIT_ENABLED = False
     
     print(f"✅ Test credentials: {creds_file}")
     print(f"✅ Test state: {tmp_dir / 'state.json'}")
@@ -98,6 +105,8 @@ def setup_test_environment(tmp_path_factory):
     # Restore original paths
     kiro.config.ACCOUNTS_CONFIG_FILE = original_creds_file
     kiro.config.ACCOUNTS_STATE_FILE = original_state_file
+    kiro.config.PROXY_API_KEY = original_proxy_api_key
+    kiro.config.RATE_LIMIT_ENABLED = original_rate_limit_enabled
     
     print("🧹 Test environment cleaned up")
 

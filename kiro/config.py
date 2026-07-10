@@ -95,8 +95,10 @@ SERVER_PORT: int = int(os.getenv("SERVER_PORT", str(DEFAULT_SERVER_PORT)))
 # Proxy Server Settings
 # ==================================================================================================
 
-# API key for proxy access (clients must pass it in Authorization header)
-PROXY_API_KEY: str = os.getenv("PROXY_API_KEY", "my-super-secret-password-123")
+# API key for proxy access (clients must pass it in Authorization header).
+# SECURITY: No default value — must be explicitly configured via environment variable or .env file.
+# If not set, the server will refuse to start with a clear error message.
+PROXY_API_KEY: str = os.getenv("PROXY_API_KEY", "")
 
 # ==================================================================================================
 # VPN/Proxy Settings for Kiro API Access
@@ -191,6 +193,22 @@ KIRO_Q_HOST_TEMPLATE: str = "https://runtime.{region}.kiro.dev"
 # Time before token expiration when refresh is needed (in seconds)
 # Default 10 minutes - refresh token in advance to avoid errors
 TOKEN_REFRESH_THRESHOLD: int = 600
+
+# ==================================================================================================
+# Rate Limiting Configuration
+# ==================================================================================================
+
+# Enable/disable rate limiting middleware.
+# When enabled, limits requests per client IP on API endpoints.
+# Health checks and model listing are exempt.
+# Default: true (enabled) - protects against abuse and quota exhaustion
+RATE_LIMIT_ENABLED: bool = os.getenv("RATE_LIMIT_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# Maximum requests per minute per client IP.
+# Applies to /v1/chat/completions and /v1/messages endpoints.
+# Default: 60 rpm (1 request per second average)
+# Set higher for trusted environments or lower for shared deployments.
+RATE_LIMIT_RPM: int = int(os.getenv("RATE_LIMIT_RPM", "60"))
 
 # ==================================================================================================
 # Retry Configuration

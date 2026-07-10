@@ -25,6 +25,7 @@ Contains the /v1/messages endpoint compatible with Anthropic's Messages API.
 Reference: https://docs.anthropic.com/en/api/messages
 """
 
+import hmac
 import json
 from typing import Optional
 
@@ -91,12 +92,13 @@ async def verify_anthropic_api_key(
     Raises:
         HTTPException: 401 if key is invalid or missing
     """
-    # Check x-api-key first (Anthropic native)
-    if x_api_key and x_api_key == PROXY_API_KEY:
+    # Check x-api-key first (Anthropic native) - constant-time comparison
+    if x_api_key and hmac.compare_digest(x_api_key, PROXY_API_KEY):
         return True
     
-    # Fall back to Authorization: Bearer
-    if authorization and authorization == f"Bearer {PROXY_API_KEY}":
+    # Fall back to Authorization: Bearer - constant-time comparison
+    expected_bearer = f"Bearer {PROXY_API_KEY}"
+    if authorization and hmac.compare_digest(authorization, expected_bearer):
         return True
     
     logger.warning("Access attempt with invalid API key (Anthropic endpoint)")

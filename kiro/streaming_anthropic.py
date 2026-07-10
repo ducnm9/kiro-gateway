@@ -448,7 +448,7 @@ async def stream_kiro_to_anthropic(
                         
                         # Events: content_block_delta (text_delta) - stream summary
                         summary = generate_search_summary(query, results)
-                        chunk_size = 100
+                        chunk_size = 800
                         for i in range(0, len(summary), chunk_size):
                             chunk = summary[i:i + chunk_size]
                             yield format_sse_event("content_block_delta", {

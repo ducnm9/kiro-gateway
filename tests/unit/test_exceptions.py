@@ -172,10 +172,11 @@ class TestValidationExceptionHandler:
             assert body["detail"][0]["type"] == "missing"
     
     @pytest.mark.asyncio
-    async def test_truncates_body_in_response(self):
+    async def test_does_not_expose_body_in_response(self):
         """
-        What it does: Verifies that body is truncated to 500 chars in response.
-        Purpose: Ensure large bodies don't bloat error responses.
+        What it does: Verifies that request body is NOT included in error response.
+        Purpose: Prevent information disclosure of potentially sensitive request data.
+        Security: Request body may contain API keys, tokens, or other secrets.
         """
         print("Setup: Creating mock request with large body...")
         from kiro.exceptions import validation_exception_handler
@@ -198,8 +199,9 @@ class TestValidationExceptionHandler:
             print("Parsing response body...")
             body = json.loads(response.body.decode())
             
-            print(f"Verifying body is truncated to 500 chars...")
-            assert len(body["body"]) <= 500
+            print(f"Verifying body is NOT in response (security)...")
+            assert "body" not in body, "Request body should not be exposed in error response"
+            assert "detail" in body, "Response should contain error detail"
 
 
 class TestValidationExceptionHandlerLogging:
@@ -264,7 +266,8 @@ class TestValidationExceptionHandlerEdgeCases:
     async def test_handles_unicode_in_body(self):
         """
         What it does: Verifies that handler works with unicode in body.
-        Purpose: Ensure international characters are handled.
+        Purpose: Ensure international characters are handled gracefully.
+        Security: Body is logged server-side but NOT exposed in response.
         """
         print("Setup: Creating mock request with unicode body...")
         from kiro.exceptions import validation_exception_handler
@@ -288,4 +291,6 @@ class TestValidationExceptionHandlerEdgeCases:
             assert response.status_code == 422
             
             body = json.loads(response.body.decode())
-            assert "Привет мир" in body["body"]
+            # Body should NOT be in response (security fix)
+            assert "body" not in body, "Request body should not be exposed in error response"
+            assert "detail" in body

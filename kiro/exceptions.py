@@ -72,6 +72,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     Correctly handles bytes objects in errors by converting them to strings.
     Also flushes debug logs for validation errors when DEBUG_MODE is enabled.
     
+    SECURITY: Request body is NOT included in the response to avoid leaking
+    sensitive data (API keys, tokens, etc.) that may be present in the payload.
+    The body is only logged server-side at DEBUG level for troubleshooting.
+    
     Args:
         request: FastAPI Request object
         exc: Validation exception from Pydantic
@@ -79,15 +83,18 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     Returns:
         JSONResponse with error details and status 422
     """
-    body = await request.body()
-    body_str = body.decode("utf-8", errors="replace")
-    
     # Sanitize errors for JSON serialization
     sanitized_errors = sanitize_validation_errors(exc.errors())
     
     logger.error(f"Validation error (422): {sanitized_errors}")
-    # Log body at DEBUG level to avoid cluttering console with potentially large payloads
-    # logger.debug(f"Request body: {body_str[:500]}...")
+    
+    # Log body server-side only at DEBUG level (never expose in response)
+    try:
+        body = await request.body()
+        body_str = body.decode("utf-8", errors="replace")
+        logger.debug(f"Request body (first 500 chars): {body_str[:500]}")
+    except Exception:
+        pass
     
     # Flush debug logs for validation errors
     # This is called AFTER middleware has initialized debug logging,
@@ -102,5 +109,5 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     
     return JSONResponse(
         status_code=422,
-        content={"detail": sanitized_errors, "body": body_str[:500]},
+        content={"detail": sanitized_errors},
     )

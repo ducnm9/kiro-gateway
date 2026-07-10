@@ -403,7 +403,9 @@ class AccountManager:
         tmp_path = state_path.with_suffix('.json.tmp')
         
         try:
-            with open(tmp_path, 'w', encoding='utf-8') as f:
+            # Write with restrictive permissions (owner-only read/write)
+            fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
                 json.dump(state_data, f, indent=2, ensure_ascii=False)
             
             # Atomic rename
@@ -420,12 +422,14 @@ class AccountManager:
         Background task for periodic state saving.
         
         Saves state every STATE_SAVE_INTERVAL_SECONDS if dirty flag is set.
+        The dirty check is performed inside the lock to prevent race conditions
+        where a concurrent write sets dirty=True between our check and reset.
         """
         while True:
             await asyncio.sleep(STATE_SAVE_INTERVAL_SECONDS)
             
-            if self._dirty:
-                async with self._lock:
+            async with self._lock:
+                if self._dirty:
                     await self._save_state()
                     self._dirty = False
     

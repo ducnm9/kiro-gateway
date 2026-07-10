@@ -124,6 +124,10 @@ def trim_payload_to_limit(payload: Dict[str, Any], max_bytes: int) -> PayloadTri
 
     Trims in user/assistant pairs (2 entries at a time), aligns start to
     userInputMessage, and repairs orphaned toolResults after trimming.
+    
+    Performance: Uses estimated entry sizes to avoid O(n²) full-payload
+    serialization on each iteration. Only re-serializes once at the end
+    to get the accurate final size.
     """
     original_bytes = check_payload_size(payload)
     history = payload.get("conversationState", {}).get("history")
@@ -142,11 +146,37 @@ def trim_payload_to_limit(payload: Dict[str, Any], max_bytes: int) -> PayloadTri
     # Strip empty toolUses before measuring
     _strip_empty_tool_uses(history)
 
-    # Trim pairs from the beginning until under limit (keep at least 2 entries)
-    while len(history) > 2 and check_payload_size(payload) > max_bytes:
+    # If already under limit, still run repairs but skip the trimming loop
+    if original_bytes <= max_bytes:
+        _repair_orphaned_tool_results(history)
+        final_bytes = check_payload_size(payload)
+        return PayloadTrimStats(
+            original_bytes=original_bytes,
+            final_bytes=final_bytes,
+            original_entries=original_entries,
+            final_entries=len(history),
+            trimmed=False,
+        )
+
+    # Pre-calculate size of each entry to avoid repeated full-payload serialization.
+    # This turns O(n²) into O(n) by estimating bytes removed per pair.
+    entry_sizes = [
+        len(json.dumps(entry, separators=(",", ":")).encode("utf-8"))
+        for entry in history
+    ]
+
+    estimated_size = original_bytes
+    trim_count = 0
+
+    # Trim pairs from the beginning until estimated size is under limit (keep at least 2 entries)
+    while len(entry_sizes) > 2 and estimated_size > max_bytes:
         # Remove 2 entries (a user/assistant pair)
+        # Account for JSON separators (commas between array elements)
+        estimated_size -= entry_sizes.pop(0) + 1  # +1 for comma separator
+        estimated_size -= entry_sizes.pop(0) + 1
         history.pop(0)
         history.pop(0)
+        trim_count += 2
 
     # Align to userInputMessage boundary
     _align_to_user_message(history)

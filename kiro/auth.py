@@ -512,8 +512,9 @@ class KiroAuthManager:
             if self._profile_arn:
                 existing_data['profileArn'] = self._profile_arn
             
-            # Save
-            with open(path, 'w', encoding='utf-8') as f:
+            # Save with restrictive permissions (owner-only read/write)
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
                 json.dump(existing_data, f, indent=2, ensure_ascii=False)
             
             logger.debug(f"Credentials saved to {self._creds_file}")
