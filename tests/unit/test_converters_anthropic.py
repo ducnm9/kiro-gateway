@@ -18,6 +18,7 @@ from unittest.mock import patch, MagicMock
 from kiro.converters_anthropic import (
     convert_anthropic_content_to_text,
     extract_system_prompt,
+    extract_system_messages_from_array,
     extract_tool_results_from_anthropic_content,
     extract_images_from_tool_results,
     extract_tool_uses_from_anthropic_content,
@@ -1884,3 +1885,249 @@ class TestAnthropicToKiroIntegration:
         print(f"Checking for <max_thinking_length>6000</max_thinking_length>...")
         assert "<max_thinking_length>6000</max_thinking_length>" in content
         assert "<thinking_mode>enabled</thinking_mode>" in content
+
+
+# ==================================================================================================
+# Tests for extract_system_messages_from_array (inline system role handling)
+# ==================================================================================================
+
+
+class TestExtractSystemMessagesFromArray:
+    """Tests for extracting system-role messages from the messages array."""
+
+    def test_no_system_messages_returns_all_messages(self):
+        """
+        What it does: Verifies that messages without system role are unchanged.
+        Purpose: Ensure no-op when there are no system messages.
+        """
+        print("Setup: Messages without system role...")
+        messages = [
+            AnthropicMessage(role="user", content="Hello"),
+            AnthropicMessage(role="assistant", content="Hi there"),
+        ]
+
+        print("Action: Extracting system messages...")
+        non_system, system_texts = extract_system_messages_from_array(messages)
+
+        print(f"Comparing: non_system count={len(non_system)}, system_texts={system_texts}")
+        assert len(non_system) == 2
+        assert system_texts == []
+
+    def test_single_system_message_extracted(self):
+        """
+        What it does: Verifies a single system message is extracted from the array.
+        Purpose: Ensure basic system message extraction works.
+        """
+        print("Setup: Messages with one system role message...")
+        messages = [
+            AnthropicMessage(role="user", content="Hello"),
+            AnthropicMessage(role="system", content="You are a helpful assistant."),
+            AnthropicMessage(role="assistant", content="Hi"),
+        ]
+
+        print("Action: Extracting system messages...")
+        non_system, system_texts = extract_system_messages_from_array(messages)
+
+        print(f"Comparing: non_system count={len(non_system)}, system_texts={system_texts}")
+        assert len(non_system) == 2
+        assert non_system[0].role == "user"
+        assert non_system[1].role == "assistant"
+        assert system_texts == ["You are a helpful assistant."]
+
+    def test_multiple_system_messages_extracted(self):
+        """
+        What it does: Verifies multiple system messages are all extracted.
+        Purpose: Ensure all system messages are captured in order.
+        """
+        print("Setup: Messages with multiple system role messages...")
+        messages = [
+            AnthropicMessage(role="system", content="Rule 1: Be concise."),
+            AnthropicMessage(role="user", content="Hello"),
+            AnthropicMessage(role="system", content="Rule 2: Be helpful."),
+        ]
+
+        print("Action: Extracting system messages...")
+        non_system, system_texts = extract_system_messages_from_array(messages)
+
+        print(f"Comparing: non_system count={len(non_system)}, system_texts={system_texts}")
+        assert len(non_system) == 1
+        assert non_system[0].role == "user"
+        assert system_texts == ["Rule 1: Be concise.", "Rule 2: Be helpful."]
+
+    def test_system_message_with_content_blocks(self):
+        """
+        What it does: Verifies system message with list content blocks is extracted.
+        Purpose: Ensure structured content is handled correctly.
+        """
+        print("Setup: System message with content block list...")
+        messages = [
+            AnthropicMessage(
+                role="system",
+                content=[TextContentBlock(text="System instructions here")],
+            ),
+            AnthropicMessage(role="user", content="Hello"),
+        ]
+
+        print("Action: Extracting system messages...")
+        non_system, system_texts = extract_system_messages_from_array(messages)
+
+        print(f"Comparing: non_system count={len(non_system)}, system_texts={system_texts}")
+        assert len(non_system) == 1
+        assert system_texts == ["System instructions here"]
+
+    def test_empty_system_message_skipped(self):
+        """
+        What it does: Verifies empty system messages are not included in the result.
+        Purpose: Avoid injecting empty strings into the system prompt.
+        """
+        print("Setup: System message with empty content...")
+        messages = [
+            AnthropicMessage(role="system", content=""),
+            AnthropicMessage(role="user", content="Hello"),
+        ]
+
+        print("Action: Extracting system messages...")
+        non_system, system_texts = extract_system_messages_from_array(messages)
+
+        print(f"Comparing: non_system count={len(non_system)}, system_texts={system_texts}")
+        assert len(non_system) == 1
+        assert system_texts == []
+
+    def test_empty_messages_list(self):
+        """
+        What it does: Verifies handling of empty messages list.
+        Purpose: Ensure no crash on edge case.
+        """
+        print("Setup: Empty messages list...")
+        messages = []
+
+        print("Action: Extracting system messages...")
+        non_system, system_texts = extract_system_messages_from_array(messages)
+
+        print(f"Comparing: non_system count={len(non_system)}, system_texts={system_texts}")
+        assert non_system == []
+        assert system_texts == []
+
+
+class TestAnthropicToKiroSystemRoleMessages:
+    """Tests for anthropic_to_kiro handling of inline system-role messages."""
+
+    def test_system_role_message_merged_into_system_prompt(self):
+        """
+        What it does: Verifies inline system message merges with the system field.
+        Purpose: Ensure both system sources combine correctly.
+        """
+        print("Setup: Request with system field AND inline system message...")
+        request = AnthropicMessagesRequest(
+            model="claude-sonnet-4-5",
+            messages=[
+                AnthropicMessage(role="system", content="Inline system instructions."),
+                AnthropicMessage(role="user", content="Hello!"),
+            ],
+            max_tokens=1024,
+            system="Top-level system prompt.",
+        )
+
+        print("Action: Converting to Kiro payload...")
+        with patch(
+            "kiro.converters_anthropic.get_model_id_for_kiro",
+            return_value="claude-sonnet-4.5",
+        ):
+            with patch("kiro.converters_core.FAKE_REASONING_ENABLED", False):
+                result = anthropic_to_kiro(request, "conv-sys-1", "arn:aws:test")
+
+        print(f"Result keys: {result.keys()}")
+        current_content = result["conversationState"]["currentMessage"][
+            "userInputMessage"
+        ]["content"]
+        print(f"Current content: {current_content}")
+        assert "Top-level system prompt." in current_content
+        assert "Inline system instructions." in current_content
+
+    def test_system_role_message_without_system_field(self):
+        """
+        What it does: Verifies inline system message works when no system field is set.
+        Purpose: Ensure system-role messages work standalone.
+        """
+        print("Setup: Request with ONLY inline system message, no system field...")
+        request = AnthropicMessagesRequest(
+            model="claude-haiku-4-5",
+            messages=[
+                AnthropicMessage(role="system", content="You are a coding assistant."),
+                AnthropicMessage(role="user", content="Write hello world"),
+            ],
+            max_tokens=512,
+        )
+
+        print("Action: Converting to Kiro payload...")
+        with patch(
+            "kiro.converters_anthropic.get_model_id_for_kiro",
+            return_value="claude-haiku-4.5",
+        ):
+            with patch("kiro.converters_core.FAKE_REASONING_ENABLED", False):
+                result = anthropic_to_kiro(request, "conv-sys-2", "arn:aws:test")
+
+        print(f"Result keys: {result.keys()}")
+        current_content = result["conversationState"]["currentMessage"][
+            "userInputMessage"
+        ]["content"]
+        print(f"Current content: {current_content}")
+        assert "You are a coding assistant." in current_content
+
+    def test_system_role_message_removed_from_conversation(self):
+        """
+        What it does: Verifies system messages are NOT passed as conversation messages.
+        Purpose: Ensure system messages don't end up in the chat history.
+        """
+        print("Setup: Request with system message between user and assistant...")
+        request = AnthropicMessagesRequest(
+            model="claude-sonnet-4-5",
+            messages=[
+                AnthropicMessage(role="system", content="Be helpful."),
+                AnthropicMessage(role="user", content="Hello!"),
+            ],
+            max_tokens=1024,
+        )
+
+        print("Action: Converting to Kiro payload...")
+        with patch(
+            "kiro.converters_anthropic.get_model_id_for_kiro",
+            return_value="claude-sonnet-4.5",
+        ):
+            with patch("kiro.converters_core.FAKE_REASONING_ENABLED", False):
+                result = anthropic_to_kiro(request, "conv-sys-3", "arn:aws:test")
+
+        # The conversation should only have user/assistant messages, not system
+        chat_history = result["conversationState"].get("chatTriggerType", "")
+        current_msg = result["conversationState"]["currentMessage"]
+        print(f"Current message: {current_msg}")
+        # System content should appear in the prompt, not as a separate message
+        user_input_content = current_msg["userInputMessage"]["content"]
+        assert "Be helpful." in user_input_content
+
+    def test_no_system_role_messages_normal_flow(self):
+        """
+        What it does: Verifies normal flow without system-role messages still works.
+        Purpose: Ensure no regression for standard requests.
+        """
+        print("Setup: Standard request with no system-role messages...")
+        request = AnthropicMessagesRequest(
+            model="claude-sonnet-4-5",
+            messages=[AnthropicMessage(role="user", content="Hello!")],
+            max_tokens=1024,
+            system="Standard system prompt.",
+        )
+
+        print("Action: Converting to Kiro payload...")
+        with patch(
+            "kiro.converters_anthropic.get_model_id_for_kiro",
+            return_value="claude-sonnet-4.5",
+        ):
+            with patch("kiro.converters_core.FAKE_REASONING_ENABLED", False):
+                result = anthropic_to_kiro(request, "conv-sys-4", "arn:aws:test")
+
+        print(f"Result keys: {result.keys()}")
+        current_content = result["conversationState"]["currentMessage"][
+            "userInputMessage"
+        ]["content"]
+        assert "Standard system prompt." in current_content

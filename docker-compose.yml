@@ -80,17 +80,17 @@ services:
           cpus: "0.5" # Minimum guaranteed CPU
           memory: 256M # Minimum guaranteed memory
 
-  caddy:
-    image: caddy:alpine
-    container_name: kiro-caddy
-    ports:
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./certs:/certs:ro
-    depends_on:
-      - kiro-gateway
-    restart: unless-stopped
+  # caddy:
+  #   image: caddy:alpine
+  #   container_name: kiro-caddy
+  #   ports:
+  #     - "443:443"
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile:ro
+  #     - ./certs:/certs:ro
+  #   depends_on:
+  #     - kiro-gateway
+  #   restart: unless-stopped
 
 networks:
   default:

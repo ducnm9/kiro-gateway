@@ -1757,3 +1757,91 @@ class TestThinkingParameter:
         print(f"Comparing thinking: got={request.thinking}")
         assert request.thinking is not None
         assert request.thinking["type"] == "disabled"
+
+
+# ==================================================================================================
+# Tests for AnthropicMessage system role support
+# ==================================================================================================
+
+
+class TestAnthropicMessageSystemRole:
+    """Tests for AnthropicMessage accepting system role."""
+
+    def test_system_role_accepted(self):
+        """
+        What it does: Verifies AnthropicMessage accepts 'system' role.
+        Purpose: Ensure the model doesn't reject system messages at validation.
+        """
+        print("Setup: Creating AnthropicMessage with system role...")
+        message = AnthropicMessage(role="system", content="You are helpful.")
+
+        print(f"Comparing role: Expected 'system', Got '{message.role}'")
+        assert message.role == "system"
+        assert message.content == "You are helpful."
+
+    def test_system_role_with_content_blocks(self):
+        """
+        What it does: Verifies system message with content block list validates.
+        Purpose: Ensure structured content works with system role.
+        """
+        print("Setup: Creating system message with content blocks...")
+        message = AnthropicMessage(
+            role="system",
+            content=[TextContentBlock(text="System instructions.")],
+        )
+
+        print(f"Comparing role: Expected 'system', Got '{message.role}'")
+        assert message.role == "system"
+        assert len(message.content) == 1
+
+    def test_user_role_still_accepted(self):
+        """
+        What it does: Verifies 'user' role still works after adding system support.
+        Purpose: Regression check for existing functionality.
+        """
+        print("Setup: Creating user message...")
+        message = AnthropicMessage(role="user", content="Hello")
+
+        assert message.role == "user"
+
+    def test_assistant_role_still_accepted(self):
+        """
+        What it does: Verifies 'assistant' role still works.
+        Purpose: Regression check for existing functionality.
+        """
+        print("Setup: Creating assistant message...")
+        message = AnthropicMessage(role="assistant", content="Hi there")
+
+        assert message.role == "assistant"
+
+    def test_invalid_role_rejected(self):
+        """
+        What it does: Verifies invalid roles are still rejected.
+        Purpose: Ensure validation still catches garbage input.
+        """
+        print("Setup: Attempting to create message with invalid role...")
+        with pytest.raises(ValidationError) as exc_info:
+            AnthropicMessage(role="admin", content="hack")
+
+        print(f"Validation error: {exc_info.value}")
+        assert "role" in str(exc_info.value)
+
+    def test_request_with_system_role_message_validates(self):
+        """
+        What it does: Verifies full request with system-role message in messages array validates.
+        Purpose: End-to-end validation of the 422 fix.
+        """
+        print("Setup: Creating full request with system-role message...")
+        request = AnthropicMessagesRequest(
+            model="claude-haiku-4.5",
+            messages=[
+                AnthropicMessage(role="system", content="Be concise."),
+                AnthropicMessage(role="user", content="Hello"),
+            ],
+            max_tokens=1024,
+        )
+
+        print(f"Comparing: messages count={len(request.messages)}")
+        assert len(request.messages) == 2
+        assert request.messages[0].role == "system"
+        assert request.messages[1].role == "user"

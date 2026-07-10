@@ -182,12 +182,18 @@ class AnthropicMessage(BaseModel):
     """
     Message in Anthropic format.
 
+    Accepts "user", "assistant", and "system" roles.
+    System-role messages are non-standard in the Anthropic spec (which uses
+    a separate `system` field), but some clients send them inline. The
+    converter layer extracts system messages and merges them into the
+    system prompt before building the Kiro payload.
+
     Attributes:
-        role: Message role (user or assistant)
+        role: Message role (user, assistant, or system)
         content: Message content (string or list of content blocks)
     """
 
-    role: Literal["user", "assistant"]
+    role: Literal["user", "assistant", "system"]
     content: Union[str, List[ContentBlock]]
 
     model_config = {"extra": "allow"}
