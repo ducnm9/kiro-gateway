@@ -147,11 +147,17 @@ async def call_kiro_mcp_api(
     try:
         token = await auth_manager.get_access_token()
         
-        # EXACT headers from architecture
+        # Headers for MCP endpoint at runtime.kiro.dev/mcp
+        # Includes AWS SDK headers and fingerprint for proper identification
+        fingerprint = auth_manager.fingerprint
         headers = {
             "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": f"aws-sdk-js/1.0.27 ua/2.1 os/win32#10.0.19044 lang/js md/nodejs#22.21.1 api/codewhispererstreaming#1.0.27 m/E KiroIDE-0.7.45-{fingerprint}",
+            "x-amz-user-agent": f"aws-sdk-js/1.0.27 KiroIDE-0.7.45-{fingerprint}",
             "x-amzn-codewhisperer-optout": "false",
-            "Content-Type": "application/json"
+            "amz-sdk-invocation-id": str(uuid.uuid4()),
+            "amz-sdk-request": "attempt=1; max=3",
         }
         
         mcp_url = f"{auth_manager.q_host}/mcp"
@@ -161,7 +167,18 @@ async def call_kiro_mcp_api(
             response = await client.post(mcp_url, json=mcp_request, headers=headers)
             
             if response.status_code != 200:
-                logger.error(f"MCP API error: {response.status_code}")
+                response_text = response.text[:500] if response.text else "(empty body)"
+                logger.error(
+                    f"MCP API error: {response.status_code} | "
+                    f"Response: {response_text}"
+                )
+                if debug_logger:
+                    try:
+                        debug_logger.log_raw_chunk(
+                            f"[MCP ERROR {response.status_code}]\n{response.text}".encode('utf-8')
+                        )
+                    except Exception:
+                        pass
                 return None, None
             
             mcp_response = response.json()
