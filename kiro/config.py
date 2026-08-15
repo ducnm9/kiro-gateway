@@ -566,6 +566,38 @@ ACCOUNT_CACHE_TTL: int = int(os.getenv("ACCOUNT_CACHE_TTL", "43200"))
 STATE_SAVE_INTERVAL_SECONDS: int = int(os.getenv("STATE_SAVE_INTERVAL_SECONDS", "10"))
 
 # ==================================================================================================
+# Command Code Settings (Optional Second Upstream)
+# ==================================================================================================
+
+# Enable Command Code as a second upstream provider.
+# When disabled (default), the gateway behaves exactly as before (native Kiro passthrough).
+COMMAND_CODE_ENABLED: bool = os.getenv("COMMAND_CODE_ENABLED", "false").lower() in ("true", "1", "yes")
+
+# Bearer API key for Command Code (obtained via the Command Code OAuth flow).
+COMMAND_CODE_API_KEY: str = os.getenv("COMMAND_CODE_API_KEY", "")
+
+# Base URL for the Command Code API.
+COMMAND_CODE_BASE_URL: str = os.getenv("COMMAND_CODE_BASE_URL", "https://api.commandcode.ai").rstrip("/")
+
+# Command Code client version header (pinned; bump via env without code change).
+COMMAND_CODE_VERSION: str = os.getenv("COMMAND_CODE_VERSION", "0.24.1")
+
+# Command Code CLI environment header.
+COMMAND_CODE_ENVIRONMENT: str = os.getenv("COMMAND_CODE_ENVIRONMENT", "production")
+
+# Default max_tokens sent to Command Code when the client does not specify a budget.
+COMMAND_CODE_MAX_TOKENS: int = int(os.getenv("COMMAND_CODE_MAX_TOKENS", "64000"))
+
+# Hard upper bound for max_tokens accepted by Command Code.
+COMMAND_CODE_MAX_TOKENS_CAP: int = 200000
+
+# Interval (seconds) between automatic Command Code model-list refreshes.
+# Command Code models change over time; the gateway re-fetches the list
+# periodically so /v1/models stays current without a restart.
+# Default: 3600 (1 hour). Set to 0 to disable automatic refresh.
+COMMAND_CODE_MODEL_REFRESH_INTERVAL: int = int(os.getenv("COMMAND_CODE_MODEL_REFRESH_INTERVAL", "3600"))
+
+# ==================================================================================================
 # Application Version
 # ==================================================================================================
 

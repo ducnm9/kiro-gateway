@@ -78,8 +78,12 @@ from kiro.config import (
     ACCOUNT_SYSTEM,
     ACCOUNTS_CONFIG_FILE,
     ACCOUNTS_STATE_FILE,
+    COMMAND_CODE_ENABLED,
+    COMMAND_CODE_API_KEY,
+    COMMAND_CODE_MODEL_REFRESH_INTERVAL,
     _warn_timeout_configuration,
 )
+from kiro.upstream_cc import CommandCodeBackend
 from kiro.auth import KiroAuthManager
 from kiro.cache import ModelInfoCache
 from kiro.model_resolver import ModelResolver
@@ -529,6 +533,33 @@ async def lifespan(app: FastAPI):
     
     logger.info("Account system initialized successfully")
     
+    # ==============================================================================
+    # Initialize Command Code backend (optional second upstream)
+    # ==============================================================================
+    cc_refresh_task = None
+    if COMMAND_CODE_ENABLED and COMMAND_CODE_API_KEY:
+        cc_backend = CommandCodeBackend()
+        try:
+            cc_backend.models = await cc_backend.list_models(app.state.http_client)
+            logger.info(f"Command Code backend initialized with {len(cc_backend.models)} models")
+        except Exception as e:
+            logger.warning(f"Command Code backend model list unavailable: {e}")
+        app.state.command_code_backend = cc_backend
+
+        # Periodic model-list refresh (Command Code models change over time)
+        if COMMAND_CODE_MODEL_REFRESH_INTERVAL > 0:
+            cc_refresh_task = asyncio.create_task(
+                cc_backend.refresh_models_periodically(
+                    app.state.http_client, COMMAND_CODE_MODEL_REFRESH_INTERVAL
+                )
+            )
+            logger.info(
+                f"Command Code model refresh scheduled every "
+                f"{COMMAND_CODE_MODEL_REFRESH_INTERVAL}s"
+            )
+    elif COMMAND_CODE_ENABLED:
+        logger.warning("COMMAND_CODE_ENABLED is true but COMMAND_CODE_API_KEY is empty; Command Code disabled")
+    
     yield
     
     # Graceful shutdown
@@ -540,6 +571,14 @@ async def lifespan(app: FastAPI):
         await save_task
     except asyncio.CancelledError:
         pass
+
+    # Cancel Command Code model refresh task
+    if cc_refresh_task:
+        cc_refresh_task.cancel()
+        try:
+            await cc_refresh_task
+        except asyncio.CancelledError:
+            pass
     
     # Final state save
     await app.state.account_manager._save_state()

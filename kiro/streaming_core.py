@@ -85,6 +85,7 @@ class KiroEvent:
     context_usage_percentage: Optional[float] = None
     is_first_thinking_chunk: bool = False
     is_last_thinking_chunk: bool = False
+    finish_reason: Optional[str] = None
 
 
 @dataclass
