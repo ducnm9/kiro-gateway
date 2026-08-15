@@ -64,6 +64,7 @@ _Use Claude models from Kiro with Claude Code, OpenCode, OpenClaw, Claw Code, Co
 | 🔄 **Retry Logic**              | Automatic retries on errors (403, 429, 5xx)    |
 | 📋 **Extended model list**      | Including versioned models                     |
 | 🔐 **Smart token management**   | Automatic refresh before expiration            |
+| 🔀 **Command Code**             | Optional second upstream provider              |
 
 ---
 
@@ -515,6 +516,50 @@ Most VPN clients provide a local proxy server you can use:
 - **Corporate VPN** — Check your IT department for proxy settings
 
 Leave `VPN_PROXY_URL` empty (default) if you don't need proxy support.
+
+---
+
+## 🔀 Command Code (Second Upstream)
+
+Kiro Gateway can also proxy to **Command Code** (`commandcode.ai`) as an optional
+second upstream. When enabled, models with a provider-qualified name (containing
+`/`, e.g. `deepseek/deepseek-v4-pro`) are routed to Command Code; all other models
+go to Kiro as usual.
+
+Both API surfaces (OpenAI + Anthropic), streaming and non-streaming, and tool
+calling are supported.
+
+### Enable
+
+```bash
+# .env
+COMMAND_CODE_ENABLED=true
+COMMAND_CODE_API_KEY=<your command code api key>
+```
+
+Obtain the API key from the Command Code OAuth flow.
+
+### How routing works
+
+| Model name                 | Routed to    |
+| -------------------------- | ------------ |
+| `deepseek/deepseek-v4-pro` | Command Code |
+| `moonshotai/Kimi-K3`       | Command Code |
+| `claude-haiku-4.5`         | Kiro         |
+
+Model names containing `/` route to Command Code; bare names route to Kiro.
+
+### Options
+
+| Env var                               | Default                      | Description                       |
+| ------------------------------------- | ---------------------------- | --------------------------------- |
+| `COMMAND_CODE_ENABLED`                | `false`                      | Enable the Command Code upstream  |
+| `COMMAND_CODE_API_KEY`                | (empty)                      | Bearer key from Command Code OAuth |
+| `COMMAND_CODE_BASE_URL`               | `https://api.commandcode.ai` | Upstream base URL                 |
+| `COMMAND_CODE_MODEL_REFRESH_INTERVAL` | `3600`                       | Model-list refresh interval (sec) |
+
+Command Code models appear in `/v1/models` and auto-refresh on the configured
+interval.
 
 ---
 
