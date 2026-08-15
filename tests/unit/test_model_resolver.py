@@ -444,6 +444,12 @@ class TestNormalizeModelNameParametrized:
         ("gpt-4", "gpt-4"),
         ("gpt-4-turbo", "gpt-4-turbo"),
         ("unknown-model", "unknown-model"),
+        # Provider prefix stripping (OpenCode, LiteLLM, etc.)
+        ("kiro/claude-sonnet-4.6", "claude-sonnet-4.6"),
+        ("kiro/claude-opus-4.6", "claude-opus-4.6"),
+        ("kiro/claude-haiku-4-5", "claude-haiku-4.5"),
+        ("openai/gpt-4", "gpt-4"),
+        ("anthropic/claude-sonnet-4", "claude-sonnet-4"),
     ])
     def test_normalize_model_name_all_scenarios(self, input_model, expected):
         """
