@@ -26,9 +26,12 @@ Contains all API endpoints:
 - /v1/chat/completions: Chat completions
 """
 
+import hmac
 import json
 from datetime import datetime, timezone
+from typing import Any, AsyncGenerator
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, Security
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import APIKeyHeader
@@ -38,6 +41,7 @@ from kiro.config import (
     PROXY_API_KEY,
     APP_VERSION,
     PROFILE_ARN,
+    STREAMING_READ_TIMEOUT,
 )
 from kiro.models_openai import (
     OpenAIModel,
@@ -53,6 +57,11 @@ from kiro.http_client import KiroHttpClient
 from kiro.utils import generate_conversation_id
 from kiro.config import WEB_SEARCH_ENABLED
 from kiro.mcp_tools import handle_native_web_search
+from kiro.upstream_base import resolve_upstream
+from kiro.converters_cc import build_cc_payload
+from kiro.streaming_cc import collect_cc_response, stream_cc_to_openai
+from kiro.upstream_cc import raise_cc_http_error
+from kiro.network_errors import classify_network_error
 
 # Import debug_logger
 try:
@@ -80,7 +89,8 @@ async def verify_api_key(auth_header: str = Security(api_key_header)) -> bool:
     Raises:
         HTTPException: 401 if key is invalid or missing
     """
-    if not auth_header or auth_header != f"Bearer {PROXY_API_KEY}":
+    expected = f"Bearer {PROXY_API_KEY}"
+    if not auth_header or not hmac.compare_digest(auth_header, expected):
         logger.warning("Access attempt with invalid API key.")
         raise HTTPException(status_code=401, detail="Invalid or missing API Key")
     return True
@@ -154,7 +164,95 @@ async def get_models(request: Request):
         for model_id in available_model_ids
     ]
     
+    # Merge Command Code models when the upstream is enabled
+    cc_backend = getattr(request.app.state, "command_code_backend", None)
+    if cc_backend is not None:
+        for cc_model in cc_backend.models:
+            model_id = cc_model.get("id", "")
+            if not model_id:
+                continue
+            provider = model_id.split("/", 1)[0] if "/" in model_id else "command-code"
+            openai_models.append(
+                OpenAIModel(
+                    id=model_id,
+                    owned_by=provider,
+                    description="Command Code model via Command Code API"
+                )
+            )
+
     return ModelList(data=openai_models)
+
+
+async def _handle_command_code_completion(
+    request: Request,
+    request_data: ChatCompletionRequest,
+) -> Response:
+    """Handle a completion routed to the Command Code upstream.
+
+    Command Code is streaming-only, so both modes send ``stream=true``.
+    Streaming uses a per-request client to avoid CLOSE_WAIT leaks.
+
+    Args:
+        request: FastAPI Request for accessing app.state.
+        request_data: OpenAI chat completion request.
+
+    Returns:
+        JSONResponse (non-streaming) or StreamingResponse (streaming).
+
+    Raises:
+        HTTPException: On misconfiguration (503) or upstream errors.
+    """
+    cc_backend = getattr(request.app.state, "command_code_backend", None)
+    if cc_backend is None:
+        raise HTTPException(status_code=503, detail="Command Code not configured")
+
+    payload = build_cc_payload(request_data)
+    url = f"{cc_backend.base_url}/alpha/generate"
+    headers = cc_backend.build_headers()
+
+    if request_data.stream:
+        timeout = httpx.Timeout(
+            connect=30.0,
+            read=STREAMING_READ_TIMEOUT,
+            write=30.0,
+            pool=30.0,
+        )
+
+        async def cc_stream_wrapper() -> AsyncGenerator[str, None]:
+            """Stream CC chunks to the client using a per-request client."""
+            async with httpx.AsyncClient(timeout=timeout) as stream_client:
+                try:
+                    req = stream_client.build_request(
+                        "POST", url, headers=headers, json=payload
+                    )
+                    response = await stream_client.send(req, stream=True)
+                except httpx.HTTPError as e:
+                    info = classify_network_error(e)
+                    raise HTTPException(status_code=502, detail=info.user_message)
+
+                if response.status_code != 200:
+                    await raise_cc_http_error(response)
+
+                async for chunk in stream_cc_to_openai(response, request_data.model):
+                    yield chunk
+
+        return StreamingResponse(cc_stream_wrapper(), media_type="text/event-stream")
+
+    # Non-streaming: use the shared client
+    client = request.app.state.http_client
+    try:
+        req = client.build_request("POST", url, headers=headers, json=payload)
+        response = await client.send(req, stream=True)
+    except httpx.HTTPError as e:
+        info = classify_network_error(e)
+        raise HTTPException(status_code=502, detail=info.user_message)
+
+    if response.status_code != 200:
+        await raise_cc_http_error(response)
+
+    result = await collect_cc_response(response, request_data.model)
+    await response.aclose()
+    return JSONResponse(content=result)
 
 
 @router.post("/v1/chat/completions", dependencies=[Depends(verify_api_key)])
@@ -180,6 +278,10 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
     
     # Note: prepare_new_request() and log_request_body() are now called by DebugLoggerMiddleware
     # This ensures debug logging works even for requests that fail Pydantic validation (422 errors)
+    
+    # Command Code upstream routing (before any Kiro-specific processing)
+    if resolve_upstream(request_data.model) == "command_code":
+        return await _handle_command_code_completion(request, request_data)
     
     # Check for truncation recovery opportunities
     from kiro.truncation_state import get_tool_truncation, get_content_truncation

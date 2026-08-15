@@ -95,8 +95,10 @@ SERVER_PORT: int = int(os.getenv("SERVER_PORT", str(DEFAULT_SERVER_PORT)))
 # Proxy Server Settings
 # ==================================================================================================
 
-# API key for proxy access (clients must pass it in Authorization header)
-PROXY_API_KEY: str = os.getenv("PROXY_API_KEY", "my-super-secret-password-123")
+# API key for proxy access (clients must pass it in Authorization header).
+# SECURITY: No default value — must be explicitly configured via environment variable or .env file.
+# If not set, the server will refuse to start with a clear error message.
+PROXY_API_KEY: str = os.getenv("PROXY_API_KEY", "")
 
 # ==================================================================================================
 # VPN/Proxy Settings for Kiro API Access
@@ -193,6 +195,22 @@ KIRO_Q_HOST_TEMPLATE: str = "https://runtime.{region}.kiro.dev"
 TOKEN_REFRESH_THRESHOLD: int = 600
 
 # ==================================================================================================
+# Rate Limiting Configuration
+# ==================================================================================================
+
+# Enable/disable rate limiting middleware.
+# When enabled, limits requests per client IP on API endpoints.
+# Health checks and model listing are exempt.
+# Default: true (enabled) - protects against abuse and quota exhaustion
+RATE_LIMIT_ENABLED: bool = os.getenv("RATE_LIMIT_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# Maximum requests per minute per client IP.
+# Applies to /v1/chat/completions and /v1/messages endpoints.
+# Default: 60 rpm (1 request per second average)
+# Set higher for trusted environments or lower for shared deployments.
+RATE_LIMIT_RPM: int = int(os.getenv("RATE_LIMIT_RPM", "60"))
+
+# ==================================================================================================
 # Retry Configuration
 # ==================================================================================================
 
@@ -275,13 +293,9 @@ HIDDEN_FROM_LIST: List[str] = ["auto"]
 # - Update gateway regularly to get the latest model list
 FALLBACK_MODELS: List[Dict[str, str]] = [
     {"modelId": "auto"},
-    {"modelId": "claude-sonnet-4"},
-    {"modelId": "claude-sonnet-4.5"},
     {"modelId": "claude-sonnet-4.6"},
     {"modelId": "claude-haiku-4.5"},
-    {"modelId": "claude-opus-4.5"},
     {"modelId": "claude-opus-4.6"},
-    {"modelId": "claude-opus-4.7"},
     {"modelId": "deepseek-3.2"},
     {"modelId": "glm-5"},
     {"modelId": "minimax-m2.1"},
@@ -550,6 +564,38 @@ ACCOUNT_CACHE_TTL: int = int(os.getenv("ACCOUNT_CACHE_TTL", "43200"))
 
 # Interval for periodic state.json saving in seconds
 STATE_SAVE_INTERVAL_SECONDS: int = int(os.getenv("STATE_SAVE_INTERVAL_SECONDS", "10"))
+
+# ==================================================================================================
+# Command Code Settings (Optional Second Upstream)
+# ==================================================================================================
+
+# Enable Command Code as a second upstream provider.
+# When disabled (default), the gateway behaves exactly as before (native Kiro passthrough).
+COMMAND_CODE_ENABLED: bool = os.getenv("COMMAND_CODE_ENABLED", "false").lower() in ("true", "1", "yes")
+
+# Bearer API key for Command Code (obtained via the Command Code OAuth flow).
+COMMAND_CODE_API_KEY: str = os.getenv("COMMAND_CODE_API_KEY", "")
+
+# Base URL for the Command Code API.
+COMMAND_CODE_BASE_URL: str = os.getenv("COMMAND_CODE_BASE_URL", "https://api.commandcode.ai").rstrip("/")
+
+# Command Code client version header (pinned; bump via env without code change).
+COMMAND_CODE_VERSION: str = os.getenv("COMMAND_CODE_VERSION", "0.24.1")
+
+# Command Code CLI environment header.
+COMMAND_CODE_ENVIRONMENT: str = os.getenv("COMMAND_CODE_ENVIRONMENT", "production")
+
+# Default max_tokens sent to Command Code when the client does not specify a budget.
+COMMAND_CODE_MAX_TOKENS: int = int(os.getenv("COMMAND_CODE_MAX_TOKENS", "64000"))
+
+# Hard upper bound for max_tokens accepted by Command Code.
+COMMAND_CODE_MAX_TOKENS_CAP: int = 200000
+
+# Interval (seconds) between automatic Command Code model-list refreshes.
+# Command Code models change over time; the gateway re-fetches the list
+# periodically so /v1/models stays current without a restart.
+# Default: 3600 (1 hour). Set to 0 to disable automatic refresh.
+COMMAND_CODE_MODEL_REFRESH_INTERVAL: int = int(os.getenv("COMMAND_CODE_MODEL_REFRESH_INTERVAL", "3600"))
 
 # ==================================================================================================
 # Application Version

@@ -1583,6 +1583,196 @@ class TestModelsEndpointAccountSystem:
 
 
 # ==================================================================================================
+# Tests for Command Code model merging in /v1/models
+# ==================================================================================================
+
+class TestModelsEndpointCommandCode:
+    """Tests for merging Command Code models into the /v1/models response."""
+
+    def test_get_models_merges_command_code_models(self, test_client, valid_proxy_api_key):
+        """
+        What it does: Verifies Command Code models are merged into /v1/models.
+        Purpose: Ensure the CC backend model list is exposed with correct owned_by.
+        """
+        fake_cc_backend = Mock()
+        fake_cc_backend.models = [{"id": "deepseek/deepseek-v4-pro"}]
+        test_client.app.state.command_code_backend = fake_cc_backend
+
+        response = test_client.get(
+            "/v1/models",
+            headers={"Authorization": f"Bearer {valid_proxy_api_key}"}
+        )
+
+        assert response.status_code == 200
+        model_ids = [m["id"] for m in response.json()["data"]]
+        assert "deepseek/deepseek-v4-pro" in model_ids
+
+        cc_model = next(
+            m for m in response.json()["data"]
+            if m["id"] == "deepseek/deepseek-v4-pro"
+        )
+        assert cc_model["owned_by"] == "deepseek"
+
+    def test_get_models_no_command_code_models_when_absent(self, test_client, valid_proxy_api_key):
+        """
+        What it does: Verifies no Command Code models appear when the backend is absent.
+        Purpose: Ensure the endpoint still works with zero CC behavior change.
+        """
+        test_client.app.state.command_code_backend = None
+
+        response = test_client.get(
+            "/v1/models",
+            headers={"Authorization": f"Bearer {valid_proxy_api_key}"}
+        )
+
+        assert response.status_code == 200
+        model_ids = [m["id"] for m in response.json()["data"]]
+        assert "deepseek/deepseek-v4-pro" not in model_ids
+
+
+# ==================================================================================================
+# Tests for Command Code routing in /v1/chat/completions
+# ==================================================================================================
+
+class TestChatCompletionsCommandCode:
+    """Tests for routing /v1/chat/completions to the Command Code upstream."""
+
+    @staticmethod
+    def _make_cc_backend():
+        """Return a fake Command Code backend with base_url and build_headers."""
+        backend = Mock()
+        backend.base_url = "https://api.commandcode.ai"
+        backend.build_headers.return_value = {
+            "Authorization": "Bearer test-key",
+            "Content-Type": "application/json",
+        }
+        return backend
+
+    @staticmethod
+    def _make_fake_response(lines, status_code=200, body=b""):
+        """Return a duck-typed async response yielding the given SSE lines."""
+        async def aiter_lines():
+            for line in lines:
+                yield line
+
+        response = AsyncMock()
+        response.status_code = status_code
+        response.aiter_lines = aiter_lines
+        response.aread = AsyncMock(return_value=body)
+        return response
+
+    @staticmethod
+    def _make_stream_client(fake_response):
+        """Return a mock per-request AsyncClient usable as an async context manager."""
+        client = AsyncMock()
+        client.build_request = Mock(return_value=Mock())
+        client.send = AsyncMock(return_value=fake_response)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        return client
+
+    def test_cc_model_non_streaming_returns_chat_completion(
+        self, test_client, valid_proxy_api_key, monkeypatch
+    ):
+        """
+        What it does: Verifies a non-streaming CC-model request returns an
+            OpenAI chat.completion with the collected content.
+        Purpose: Ensure the M2 non-streaming CC path works end to end.
+        """
+        monkeypatch.setattr("kiro.config.COMMAND_CODE_ENABLED", True)
+        test_client.app.state.command_code_backend = self._make_cc_backend()
+
+        fake_response = self._make_fake_response([
+            'data: {"type":"text-delta","text":"Hello"}',
+            'data: {"type":"text-delta","text":" world"}',
+            'data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":10,"outputTokens":5,"totalTokens":15}}',
+        ])
+        mock_client = Mock()
+        mock_client.build_request = Mock(return_value=Mock())
+        mock_client.send = AsyncMock(return_value=fake_response)
+        test_client.app.state.http_client = mock_client
+
+        response = test_client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": f"Bearer {valid_proxy_api_key}"},
+            json={
+                "model": "deepseek/deepseek-v4-pro",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stream": False,
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["object"] == "chat.completion"
+        assert body["model"] == "deepseek/deepseek-v4-pro"
+        assert body["choices"][0]["message"]["content"] == "Hello world"
+        assert body["choices"][0]["finish_reason"] == "stop"
+        assert body["usage"] == {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+        }
+
+    def test_cc_model_streaming_returns_event_stream(
+        self, test_client, valid_proxy_api_key, monkeypatch
+    ):
+        """
+        What it does: Verifies a streaming CC-model request returns a 200
+            text/event-stream whose body contains content chunks and [DONE].
+        Purpose: Ensure the M3 streaming CC path works end to end.
+        """
+        monkeypatch.setattr("kiro.config.COMMAND_CODE_ENABLED", True)
+        test_client.app.state.command_code_backend = self._make_cc_backend()
+
+        fake_response = self._make_fake_response([
+            'data: {"type":"text-delta","text":"Hello"}',
+            'data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":10,"outputTokens":5,"totalTokens":15}}',
+        ])
+        mock_stream_client = self._make_stream_client(fake_response)
+
+        with patch("kiro.routes_openai.httpx.AsyncClient", return_value=mock_stream_client):
+            response = test_client.post(
+                "/v1/chat/completions",
+                headers={"Authorization": f"Bearer {valid_proxy_api_key}"},
+                json={
+                    "model": "deepseek/deepseek-v4-pro",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "stream": True,
+                },
+            )
+
+        assert response.status_code == 200
+        assert "text/event-stream" in response.headers.get("content-type", "")
+        body = response.text
+        assert '"content": "Hello"' in body
+        assert '"object": "chat.completion.chunk"' in body
+        assert "data: [DONE]" in body
+
+    def test_cc_model_without_backend_returns_503(
+        self, test_client, valid_proxy_api_key, monkeypatch
+    ):
+        """
+        What it does: Verifies a CC-model request returns 503 when the backend is absent.
+        Purpose: Ensure a clear error when Command Code is not configured.
+        """
+        monkeypatch.setattr("kiro.config.COMMAND_CODE_ENABLED", True)
+        test_client.app.state.command_code_backend = None
+
+        response = test_client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": f"Bearer {valid_proxy_api_key}"},
+            json={
+                "model": "deepseek/deepseek-v4-pro",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stream": False,
+            },
+        )
+
+        assert response.status_code == 503
+
+
+# ==================================================================================================
 # Tests for Account System - Failover Loop
 # ==================================================================================================
 

@@ -229,7 +229,7 @@ async def stream_kiro_to_openai_internal(
                             summary = generate_search_summary(query, results)
                             
                             # Send content chunks
-                            chunk_size = 100
+                            chunk_size = 800
                             for i in range(0, len(summary), chunk_size):
                                 content_chunk = summary[i:i + chunk_size]
                                 

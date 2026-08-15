@@ -31,9 +31,9 @@ This module provides:
 import json
 import time
 import uuid
-import random
+import secrets
 import string
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Tuple
 
 import httpx
@@ -55,7 +55,7 @@ except ImportError:
 
 def generate_random_id(length: int) -> str:
     """
-    Generate random alphanumeric string.
+    Generate random alphanumeric string using cryptographically secure RNG.
     
     Args:
         length: Length of string to generate
@@ -67,7 +67,8 @@ def generate_random_id(length: int) -> str:
         >>> generate_random_id(22)
         'aBcD1234567890XyZ12345'
     """
-    return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
 
 
 # ==================================================================================================
@@ -147,11 +148,17 @@ async def call_kiro_mcp_api(
     try:
         token = await auth_manager.get_access_token()
         
-        # EXACT headers from architecture
+        # Headers for MCP endpoint at runtime.kiro.dev/mcp
+        # Includes AWS SDK headers and fingerprint for proper identification
+        fingerprint = auth_manager.fingerprint
         headers = {
             "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": f"aws-sdk-js/1.0.27 ua/2.1 os/win32#10.0.19044 lang/js md/nodejs#22.21.1 api/codewhispererstreaming#1.0.27 m/E KiroIDE-0.7.45-{fingerprint}",
+            "x-amz-user-agent": f"aws-sdk-js/1.0.27 KiroIDE-0.7.45-{fingerprint}",
             "x-amzn-codewhisperer-optout": "false",
-            "Content-Type": "application/json"
+            "amz-sdk-invocation-id": str(uuid.uuid4()),
+            "amz-sdk-request": "attempt=1; max=3",
         }
         
         mcp_url = f"{auth_manager.q_host}/mcp"
@@ -161,7 +168,18 @@ async def call_kiro_mcp_api(
             response = await client.post(mcp_url, json=mcp_request, headers=headers)
             
             if response.status_code != 200:
-                logger.error(f"MCP API error: {response.status_code}")
+                response_text = response.text[:500] if response.text else "(empty body)"
+                logger.error(
+                    f"MCP API error: {response.status_code} | "
+                    f"Response: {response_text}"
+                )
+                if debug_logger:
+                    try:
+                        debug_logger.log_raw_chunk(
+                            f"[MCP ERROR {response.status_code}]\n{response.text}".encode('utf-8')
+                        )
+                    except Exception:
+                        pass
                 return None, None
             
             mcp_response = response.json()
@@ -247,10 +265,10 @@ def generate_search_summary(query: str, results: Dict) -> str:
             # Format: Published date (convert from milliseconds timestamp)
             if published_date_ms:
                 try:
-                    # Convert milliseconds to seconds for datetime
-                    dt = datetime.fromtimestamp(published_date_ms / 1000)
-                    # Format as "13 Mar 2025 14:23:45"
-                    date_str = dt.strftime("%d %b %Y %H:%M:%S")
+                    # Convert milliseconds to seconds for datetime (UTC)
+                    dt = datetime.fromtimestamp(published_date_ms / 1000, tz=timezone.utc)
+                    # Format as "13 Mar 2025 14:23:45 UTC"
+                    date_str = dt.strftime("%d %b %Y %H:%M:%S UTC")
                     summary += f"   Published: {date_str}\n"
                 except (ValueError, OSError):
                     # Invalid timestamp - skip date
@@ -396,7 +414,7 @@ async def generate_anthropic_web_search_sse(
     })
     
     # Events 8-N: content_block_delta (text_delta) - stream summary in chunks
-    chunk_size = 100
+    chunk_size = 800
     for i in range(0, len(summary), chunk_size):
         chunk = summary[i:i + chunk_size]
         yield format_sse_event("content_block_delta", {
@@ -488,7 +506,7 @@ async def generate_openai_web_search_sse(
     yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
     
     # Chunks 2-N: content (stream summary in chunks)
-    chunk_size = 100
+    chunk_size = 800
     for i in range(0, len(summary), chunk_size):
         content_chunk = summary[i:i + chunk_size]
         chunk = {

@@ -25,16 +25,17 @@ Contains the /v1/messages endpoint compatible with Anthropic's Messages API.
 Reference: https://docs.anthropic.com/en/api/messages
 """
 
+import hmac
 import json
-from typing import Optional
+from typing import AsyncGenerator, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Security, Header
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, Security, Header
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import APIKeyHeader
 from loguru import logger
 
-from kiro.config import PROXY_API_KEY, PROFILE_ARN
+from kiro.config import PROXY_API_KEY, PROFILE_ARN, STREAMING_READ_TIMEOUT
 from kiro.models_anthropic import (
     AnthropicMessagesRequest,
     AnthropicCountTokensRequest,
@@ -55,6 +56,11 @@ from kiro.utils import generate_conversation_id
 from kiro.tokenizer import estimate_request_tokens
 from kiro.config import WEB_SEARCH_ENABLED
 from kiro.mcp_tools import handle_native_web_search
+from kiro.upstream_base import resolve_upstream
+from kiro.converters_cc import build_cc_payload_anthropic
+from kiro.streaming_cc import collect_cc_anthropic_response, stream_cc_to_anthropic
+from kiro.upstream_cc import raise_cc_http_error
+from kiro.network_errors import classify_network_error
 
 # Import debug_logger
 try:
@@ -91,12 +97,13 @@ async def verify_anthropic_api_key(
     Raises:
         HTTPException: 401 if key is invalid or missing
     """
-    # Check x-api-key first (Anthropic native)
-    if x_api_key and x_api_key == PROXY_API_KEY:
+    # Check x-api-key first (Anthropic native) - constant-time comparison
+    if x_api_key and hmac.compare_digest(x_api_key, PROXY_API_KEY):
         return True
     
-    # Fall back to Authorization: Bearer
-    if authorization and authorization == f"Bearer {PROXY_API_KEY}":
+    # Fall back to Authorization: Bearer - constant-time comparison
+    expected_bearer = f"Bearer {PROXY_API_KEY}"
+    if authorization and hmac.compare_digest(authorization, expected_bearer):
         return True
     
     logger.warning("Access attempt with invalid API key (Anthropic endpoint)")
@@ -114,6 +121,68 @@ async def verify_anthropic_api_key(
 
 # --- Router ---
 router = APIRouter(tags=["Anthropic API"])
+
+
+async def _handle_command_code_completion_anthropic(
+    request: Request,
+    request_data: AnthropicMessagesRequest,
+) -> Response:
+    """Handle a /v1/messages request routed to the Command Code upstream.
+
+    Args:
+        request: FastAPI Request for accessing app.state.
+        request_data: Anthropic Messages request.
+
+    Returns:
+        JSONResponse (non-streaming) or StreamingResponse (streaming).
+
+    Raises:
+        HTTPException: On misconfiguration (503) or upstream errors.
+    """
+    cc_backend = getattr(request.app.state, "command_code_backend", None)
+    if cc_backend is None:
+        raise HTTPException(status_code=503, detail="Command Code not configured")
+
+    payload = build_cc_payload_anthropic(request_data)
+    url = f"{cc_backend.base_url}/alpha/generate"
+    headers = cc_backend.build_headers()
+
+    if request_data.stream:
+        timeout = httpx.Timeout(connect=30.0, read=STREAMING_READ_TIMEOUT, write=30.0, pool=30.0)
+
+        async def cc_stream_wrapper() -> AsyncGenerator[str, None]:
+            async with httpx.AsyncClient(timeout=timeout) as stream_client:
+                try:
+                    req = stream_client.build_request("POST", url, headers=headers, json=payload)
+                    response = await stream_client.send(req, stream=True)
+                except httpx.HTTPError as e:
+                    info = classify_network_error(e)
+                    raise HTTPException(status_code=502, detail=info.user_message)
+                if response.status_code != 200:
+                    await raise_cc_http_error(response)
+                async for chunk in stream_cc_to_anthropic(response, request_data.model):
+                    yield chunk
+
+        return StreamingResponse(
+            cc_stream_wrapper(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+
+    client = request.app.state.http_client
+    try:
+        req = client.build_request("POST", url, headers=headers, json=payload)
+        response = await client.send(req, stream=True)
+    except httpx.HTTPError as e:
+        info = classify_network_error(e)
+        raise HTTPException(status_code=502, detail=info.user_message)
+
+    if response.status_code != 200:
+        await raise_cc_http_error(response)
+
+    result = await collect_cc_anthropic_response(response, request_data.model)
+    await response.aclose()
+    return JSONResponse(content=result)
 
 
 @router.post("/v1/messages", dependencies=[Depends(verify_anthropic_api_key)])
@@ -152,6 +221,10 @@ async def messages(
     
     # Note: prepare_new_request() and log_request_body() are now called by DebugLoggerMiddleware
     # This ensures debug logging works even for requests that fail Pydantic validation (422 errors)
+    
+    # Command Code upstream routing (before any Kiro-specific processing)
+    if resolve_upstream(request_data.model) == "command_code":
+        return await _handle_command_code_completion_anthropic(request, request_data)
     
     # Check for truncation recovery opportunities
     from kiro.truncation_state import get_tool_truncation, get_content_truncation

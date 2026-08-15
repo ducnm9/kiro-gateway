@@ -426,6 +426,42 @@ def extract_thinking_config_from_anthropic(request: AnthropicMessagesRequest) ->
     return ThinkingConfig(enabled=True, budget_tokens=None)
 
 
+def extract_system_messages_from_array(
+    messages: List[AnthropicMessage],
+) -> tuple[List[AnthropicMessage], List[str]]:
+    """
+    Separates system-role messages from the messages array.
+
+    Some clients (e.g., Claude Desktop local agent mode) send system-role
+    messages inline in the messages array instead of using the dedicated
+    `system` field. This function extracts those messages so their content
+    can be merged into the system prompt.
+
+    Args:
+        messages: Original list of Anthropic messages (may contain system-role entries)
+
+    Returns:
+        Tuple of (non-system messages, list of system text strings extracted)
+    """
+    non_system: List[AnthropicMessage] = []
+    system_texts: List[str] = []
+
+    for msg in messages:
+        if msg.role == "system":
+            text = convert_anthropic_content_to_text(msg.content)
+            if text:
+                system_texts.append(text)
+        else:
+            non_system.append(msg)
+
+    if system_texts:
+        logger.debug(
+            f"Extracted {len(system_texts)} system-role message(s) from messages array"
+        )
+
+    return non_system, system_texts
+
+
 def anthropic_to_kiro(
     request: AnthropicMessagesRequest, conversation_id: str, profile_arn: str
 ) -> dict:
@@ -439,6 +475,9 @@ def anthropic_to_kiro(
     - Content can be string or list of content blocks
     - Tool format uses input_schema instead of parameters
 
+    Handles non-standard system-role messages in the messages array by
+    extracting them and merging their content into the system prompt.
+
     Args:
         request: Anthropic MessagesRequest
         conversation_id: Unique conversation ID
@@ -450,8 +489,13 @@ def anthropic_to_kiro(
     Raises:
         ValueError: If there are no messages to send
     """
-    # Convert messages to unified format
-    unified_messages = convert_anthropic_messages(request.messages)
+    # Extract system-role messages from the messages array (non-standard but sent by some clients)
+    conversation_messages, inline_system_texts = extract_system_messages_from_array(
+        request.messages
+    )
+
+    # Convert remaining messages to unified format
+    unified_messages = convert_anthropic_messages(conversation_messages)
 
     # Convert tools to unified format
     unified_tools = convert_anthropic_tools(request.tools)
@@ -459,6 +503,12 @@ def anthropic_to_kiro(
     # System prompt is already separate in Anthropic format!
     # It can be a string or list of content blocks (for prompt caching)
     system_prompt = extract_system_prompt(request.system)
+
+    # Merge inline system-role messages into the system prompt
+    if inline_system_texts:
+        parts = [system_prompt] if system_prompt else []
+        parts.extend(inline_system_texts)
+        system_prompt = "\n".join(parts)
 
     # Get model ID for Kiro API (normalizes + resolves hidden models)
     # Pass-through principle: we normalize and send to Kiro, Kiro decides if valid

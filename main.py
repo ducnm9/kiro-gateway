@@ -78,8 +78,12 @@ from kiro.config import (
     ACCOUNT_SYSTEM,
     ACCOUNTS_CONFIG_FILE,
     ACCOUNTS_STATE_FILE,
+    COMMAND_CODE_ENABLED,
+    COMMAND_CODE_API_KEY,
+    COMMAND_CODE_MODEL_REFRESH_INTERVAL,
     _warn_timeout_configuration,
 )
+from kiro.upstream_cc import CommandCodeBackend
 from kiro.auth import KiroAuthManager
 from kiro.cache import ModelInfoCache
 from kiro.model_resolver import ModelResolver
@@ -88,6 +92,7 @@ from kiro.routes_openai import router as openai_router
 from kiro.routes_anthropic import router as anthropic_router
 from kiro.exceptions import validation_exception_handler
 from kiro.debug_middleware import DebugLoggerMiddleware
+from kiro.rate_limiter import RateLimitMiddleware
 
 
 # --- Loguru Configuration ---
@@ -221,6 +226,22 @@ def validate_configuration() -> None:
     Raises:
         SystemExit: If critical configuration is missing
     """
+    # Validate PROXY_API_KEY is set (security requirement)
+    if not PROXY_API_KEY:
+        logger.error("")
+        logger.error("=" * 60)
+        logger.error("  SECURITY ERROR: PROXY_API_KEY not configured!")
+        logger.error("=" * 60)
+        logger.error("  PROXY_API_KEY is required to protect your gateway.")
+        logger.error("  Set it in .env file or as an environment variable:")
+        logger.error("")
+        logger.error('    PROXY_API_KEY="your-strong-random-password-here"')
+        logger.error("")
+        logger.error("  Tip: Use a strong, random password (32+ characters).")
+        logger.error("=" * 60)
+        logger.error("")
+        raise RuntimeError("PROXY_API_KEY is not configured")
+    
     # Priority 1: Check if credentials.json exists (Account System)
     # If it exists, legacy .env validation is skipped
     from kiro.config import ACCOUNTS_CONFIG_FILE
@@ -335,11 +356,12 @@ async def lifespan(app: FastAPI):
     
     # Create shared HTTP client with connection pooling
     # This reduces memory usage and enables connection reuse across requests
-    # Limits: max 100 total connections, max 20 keep-alive connections
+    # Limits: max 100 total connections, max 50 keep-alive connections
+    # keepalive_expiry=120s reduces TLS handshake overhead for repeated requests
     limits = httpx.Limits(
         max_connections=100,
-        max_keepalive_connections=20,
-        keepalive_expiry=30.0  # Close idle connections after 30 seconds
+        max_keepalive_connections=50,
+        keepalive_expiry=120.0  # Keep idle connections alive for 2 minutes
     )
     # Timeout configuration for streaming (long read timeout for model "thinking")
     timeout = httpx.Timeout(
@@ -410,8 +432,9 @@ async def lifespan(app: FastAPI):
                     _add_env_overrides(entry)
                     credentials.append(entry)
             
-                # Save credentials.json
-                with open(creds_path, 'w', encoding='utf-8') as f:
+                # Save credentials.json with restrictive permissions (owner-only)
+                fd = os.open(str(creds_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, 'w', encoding='utf-8') as f:
                     json.dump(credentials, f, indent=2, ensure_ascii=False)
                 
                 logger.info("Created credentials.json from .env (one-time migration)")
@@ -444,8 +467,9 @@ async def lifespan(app: FastAPI):
                 _add_env_overrides(entry)
                 credentials.append(entry)
             
-            # Save credentials.json (overwrite if exists)
-            with open(creds_path, 'w', encoding='utf-8') as f:
+            # Save credentials.json (overwrite if exists) with restrictive permissions
+            fd = os.open(str(creds_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
                 json.dump(credentials, f, indent=2, ensure_ascii=False)
             
             logger.debug("credentials.json recreated from .env (legacy mode)")
@@ -509,6 +533,33 @@ async def lifespan(app: FastAPI):
     
     logger.info("Account system initialized successfully")
     
+    # ==============================================================================
+    # Initialize Command Code backend (optional second upstream)
+    # ==============================================================================
+    cc_refresh_task = None
+    if COMMAND_CODE_ENABLED and COMMAND_CODE_API_KEY:
+        cc_backend = CommandCodeBackend()
+        try:
+            cc_backend.models = await cc_backend.list_models(app.state.http_client)
+            logger.info(f"Command Code backend initialized with {len(cc_backend.models)} models")
+        except Exception as e:
+            logger.warning(f"Command Code backend model list unavailable: {e}")
+        app.state.command_code_backend = cc_backend
+
+        # Periodic model-list refresh (Command Code models change over time)
+        if COMMAND_CODE_MODEL_REFRESH_INTERVAL > 0:
+            cc_refresh_task = asyncio.create_task(
+                cc_backend.refresh_models_periodically(
+                    app.state.http_client, COMMAND_CODE_MODEL_REFRESH_INTERVAL
+                )
+            )
+            logger.info(
+                f"Command Code model refresh scheduled every "
+                f"{COMMAND_CODE_MODEL_REFRESH_INTERVAL}s"
+            )
+    elif COMMAND_CODE_ENABLED:
+        logger.warning("COMMAND_CODE_ENABLED is true but COMMAND_CODE_API_KEY is empty; Command Code disabled")
+    
     yield
     
     # Graceful shutdown
@@ -520,6 +571,14 @@ async def lifespan(app: FastAPI):
         await save_task
     except asyncio.CancelledError:
         pass
+
+    # Cancel Command Code model refresh task
+    if cc_refresh_task:
+        cc_refresh_task.cancel()
+        try:
+            await cc_refresh_task
+        except asyncio.CancelledError:
+            pass
     
     # Final state save
     await app.state.account_manager._save_state()
@@ -544,11 +603,14 @@ app = FastAPI(
 
 # --- CORS Middleware ---
 # Allow CORS for all origins to support browser clients
-# and tools that send preflight OPTIONS requests
+# and tools that send preflight OPTIONS requests.
+# NOTE: allow_credentials is disabled because allow_origins=["*"] with
+# allow_credentials=True is a security risk (any site can make authenticated
+# cross-origin requests). Clients should use Authorization header instead of cookies.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Allow all origins
-    allow_credentials=True,
+    allow_credentials=False,  # Disabled for security with wildcard origins
     allow_methods=["*"],  # Allow all methods (GET, POST, OPTIONS, etc.)
     allow_headers=["*"],  # Allow all headers
 )
@@ -558,6 +620,12 @@ app.add_middleware(
 # Initializes debug logging BEFORE Pydantic validation
 # This allows capturing validation errors (422) in debug logs
 app.add_middleware(DebugLoggerMiddleware)
+
+
+# --- Rate Limit Middleware ---
+# Protects API endpoints against abuse and quota exhaustion.
+# Configurable via RATE_LIMIT_ENABLED and RATE_LIMIT_RPM env vars.
+app.add_middleware(RateLimitMiddleware)
 
 
 # --- Validation Error Handler Registration ---

@@ -1,0 +1,4 @@
+https://gateway-forme.com:443 {
+    tls /certs/cert.pem /certs/key.pem
+    reverse_proxy kiro-gateway:8000
+}
