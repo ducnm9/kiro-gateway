@@ -1,0 +1,841 @@
+{
+    "$schema": "https://opencode.ai/config.json",
+    "model": "kiro/auto-kiro",
+    "providers": {
+        "kiro": {
+            "name": "Kiro Gateway",
+            "package": "@opencode-ai/ai/providers/openai-compatible",
+            "env": [
+                "KIRO_GATEWAY_API_KEY"
+            ],
+            "settings": {
+                "baseURL": "http://localhost:8000/v1",
+                "apiKey": "{env:KIRO_GATEWAY_API_KEY}"
+            },
+            "models": {
+                "auto-kiro": {
+                    "modelID": "auto",
+                    "name": "Auto (Kiro)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text",
+                            "image"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 32000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                },
+                "claude-haiku-4.5": {
+                    "modelID": "claude-haiku-4.5",
+                    "name": "Claude Haiku 4.5 (Kiro)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text",
+                            "image"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 32000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                },
+                "claude-opus-4.6": {
+                    "modelID": "claude-opus-4.6",
+                    "name": "Claude Opus 4.6 (Kiro)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text",
+                            "image"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 32000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                },
+                "claude-sonnet-4.6": {
+                    "modelID": "claude-sonnet-4.6",
+                    "name": "Claude Sonnet 4.6 (Kiro)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text",
+                            "image"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 32000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                },
+                "deepseek-3.2": {
+                    "modelID": "deepseek-3.2",
+                    "name": "DeepSeek 3.2 (Kiro)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 32000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                },
+                "glm-5": {
+                    "modelID": "glm-5",
+                    "name": "GLM-5 (Kiro)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 32000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                },
+                "minimax-m2.1": {
+                    "modelID": "minimax-m2.1",
+                    "name": "MiniMax M2.1 (Kiro)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 32000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                },
+                "minimax-m2.5": {
+                    "modelID": "minimax-m2.5",
+                    "name": "MiniMax M2.5 (Kiro)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 32000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                },
+                "qwen3-coder-next": {
+                    "modelID": "qwen3-coder-next",
+                    "name": "Qwen3 Coder Next (Kiro)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 32000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                },
+                "cc-deepseek-v4-pro": {
+                    "modelID": "deepseek/deepseek-v4-pro",
+                    "name": "DeepSeek V4 Pro (Command Code)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 64000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                },
+                "cc-deepseek-v4-flash": {
+                    "modelID": "deepseek/deepseek-v4-flash",
+                    "name": "DeepSeek V4 Flash (Command Code)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 64000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                },
+                "cc-deepseek-v4-flash-vision-exp": {
+                    "modelID": "deepseek/deepseek-v4-flash-vision-exp",
+                    "name": "DeepSeek V4 Flash Vision Exp (Command Code)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text",
+                            "image"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 64000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                },
+                "cc-deepseek-v4-flash-fast": {
+                    "modelID": "deepseek/deepseek-v4-flash-fast",
+                    "name": "DeepSeek V4 Flash Fast (Command Code)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 64000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                },
+                "cc-glm-5.3-flash": {
+                    "modelID": "z-ai/glm-5.3-flash",
+                    "name": "GLM-5.3 Flash (Command Code)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 64000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                },
+                "cc-glm-5.3": {
+                    "modelID": "zai-org/GLM-5.3",
+                    "name": "GLM-5.3 (Command Code)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 64000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                },
+                "cc-qwen3.8-max-0902": {
+                    "modelID": "Qwen/Qwen3.8-Max-0902",
+                    "name": "Qwen3.8 Max 0902 (Command Code)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 64000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                },
+                "cc-qwen3.8-max": {
+                    "modelID": "Qwen/Qwen3.8-Max",
+                    "name": "Qwen3.8 Max (Command Code)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 64000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                },
+                "cc-qwen3.8-27b": {
+                    "modelID": "Qwen/Qwen3.8-27B",
+                    "name": "Qwen3.8 27B (Command Code)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 64000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                },
+                "cc-qwen3.8-flash": {
+                    "modelID": "Qwen/Qwen3.8-Flash",
+                    "name": "Qwen3.8 Flash (Command Code)",
+                    "capabilities": {
+                        "tools": true,
+                        "input": [
+                            "text"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "limit": {
+                        "context": 200000,
+                        "output": 64000
+                    },
+                    "variants": [
+                        {
+                            "id": "low",
+                            "settings": {
+                                "reasoningEffort": "low"
+                            }
+                        },
+                        {
+                            "id": "medium",
+                            "settings": {
+                                "reasoningEffort": "medium"
+                            }
+                        },
+                        {
+                            "id": "high",
+                            "settings": {
+                                "reasoningEffort": "high"
+                            }
+                        },
+                        {
+                            "id": "max",
+                            "settings": {
+                                "reasoningEffort": "xhigh"
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    }
+}
