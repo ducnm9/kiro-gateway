@@ -1,0 +1,537 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "auto-kiro",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "anthropic",
+      "description": "Claude model via Kiro API"
+    },
+    {
+      "id": "claude-haiku-4.5",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "anthropic",
+      "description": "Claude model via Kiro API"
+    },
+    {
+      "id": "claude-opus-4.6",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "anthropic",
+      "description": "Claude model via Kiro API"
+    },
+    {
+      "id": "claude-sonnet-4.6",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "anthropic",
+      "description": "Claude model via Kiro API"
+    },
+    {
+      "id": "deepseek-3.2",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "anthropic",
+      "description": "Claude model via Kiro API"
+    },
+    {
+      "id": "glm-5",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "anthropic",
+      "description": "Claude model via Kiro API"
+    },
+    {
+      "id": "minimax-m2.1",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "anthropic",
+      "description": "Claude model via Kiro API"
+    },
+    {
+      "id": "minimax-m2.5",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "anthropic",
+      "description": "Claude model via Kiro API"
+    },
+    {
+      "id": "qwen3-coder-next",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "anthropic",
+      "description": "Claude model via Kiro API"
+    },
+    {
+      "id": "claude-sonnet-5",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "command-code",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "command-code",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "claude-fable-5-1",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "command-code",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "claude-fable-5",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "command-code",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "claude-opus-5",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "command-code",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "claude-opus-4-8",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "command-code",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "claude-opus-4-7",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "command-code",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "claude-haiku-4-5-20251001",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "command-code",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "command-code",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "command-code",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "command-code",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "gpt-5.5",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "command-code",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "gpt-5.4",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "command-code",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "gpt-5.3-codex",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "command-code",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "command-code",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "deepseek/deepseek-v4-pro",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "deepseek",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "deepseek",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash-vision-exp",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "deepseek",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash-fast",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "deepseek",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "moonshotai/Kimi-K3",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "moonshotai",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "moonshotai/Kimi-K2.7-Code",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "moonshotai",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "moonshotai/Kimi-K2.7-Code-Highspeed",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "moonshotai",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "moonshotai/Kimi-K2.6",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "moonshotai",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "moonshotai/Kimi-K2.5",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "moonshotai",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "z-ai/glm-5.3-flash",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "z-ai",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "zai-org/GLM-5.3",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "zai-org",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "zai-org/GLM-5.2",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "zai-org",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "zai-org/GLM-5.2-Fast",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "zai-org",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "zai-org/GLM-5.1",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "zai-org",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "zai-org/GLM-5",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "zai-org",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "MiniMaxAI/MiniMax-M3",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "MiniMaxAI",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "MiniMaxAI/MiniMax-M2.7",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "MiniMaxAI",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "MiniMaxAI/MiniMax-M2.5",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "MiniMaxAI",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "xiaomi/mimo-v2.5-pro",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "xiaomi",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "xiaomi/mimo-v2.5",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "xiaomi",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "Qwen/Qwen3.8-Max-0902",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "Qwen",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "Qwen/Qwen3.8-Max",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "Qwen",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "Qwen/Qwen3.8-27B",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "Qwen",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "Qwen/Qwen3.8-Flash",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "Qwen",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "Qwen/Qwen3.7-Max",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "Qwen",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "Qwen/Qwen3.7-Plus",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "Qwen",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "Qwen/Qwen3.7-Flash",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "Qwen",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "Qwen/Qwen3.6-Max-Preview",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "Qwen",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "Qwen/Qwen3.6-Plus",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "Qwen",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "meituan/LongCat-2.0:free",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "meituan",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "stepfun/Step-3.7-Flash",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "stepfun",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "stepfun/Step-3.5-Flash",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "stepfun",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "tencent/hy3-paid",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "tencent",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "tencent/hy4-preview",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "tencent",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "google/gemini-3.8-flash",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "google",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "google/gemini-3.7-flash",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "google",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "google/gemini-3.6-flash",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "google",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "google/gemini-3.5-flash",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "google",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "google/gemini-3.5-flash-lite",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "google",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "google/gemini-3.1-flash-lite",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "google",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "sakana/fugu-ultra",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "sakana",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "nvidia/nemotron-3-ultra-550b-a55b",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "nvidia",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "thinkingmachines/inkling",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "thinkingmachines",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "thinkingmachines/inkling-small",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "thinkingmachines",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "poolside/laguna-s-2.1-free",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "poolside",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "meta/muse-spark-1.1",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "meta",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "meta/muse-spark-1.2",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "meta",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "meta/muse-spark-1.2-contributor",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "meta",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "meta/muse-spark-1.3",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "meta",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "meta/muse-spark-1.3-contributor",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "meta",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "xai/grok-4.5",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "xai",
+      "description": "Command Code model via Command Code API"
+    },
+    {
+      "id": "xai/grok-4.6",
+      "object": "model",
+      "created": 1788416679,
+      "owned_by": "xai",
+      "description": "Command Code model via Command Code API"
+    }
+  ]
+}
