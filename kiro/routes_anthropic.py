@@ -56,7 +56,7 @@ from kiro.utils import generate_conversation_id
 from kiro.tokenizer import estimate_request_tokens
 from kiro.config import WEB_SEARCH_ENABLED
 from kiro.mcp_tools import handle_native_web_search
-from kiro.upstream_base import resolve_upstream
+from kiro.upstream_base import resolve_upstream, kiro_disabled_error_message
 from kiro.converters_cc import build_cc_payload_anthropic
 from kiro.streaming_cc import collect_cc_anthropic_response, stream_cc_to_anthropic
 from kiro.upstream_cc import raise_cc_http_error
@@ -381,6 +381,13 @@ async def messages(
         return await _handle_command_code_completion_anthropic(request, request_data)
     if _upstream == "chatgpt":
         return await _handle_chatgpt_completion_anthropic(request, request_data)
+    if _upstream == "kiro_disabled":
+        # Kiro upstream is off and the model matched no other enabled upstream.
+        # Return a clear error rather than routing to a non-existent backend.
+        raise HTTPException(
+            status_code=400,
+            detail=kiro_disabled_error_message(request_data.model),
+        )
     
     # Check for truncation recovery opportunities
     from kiro.truncation_state import get_tool_truncation, get_content_truncation

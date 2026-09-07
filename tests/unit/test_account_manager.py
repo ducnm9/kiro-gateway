@@ -1564,6 +1564,77 @@ class TestPerProviderStateMigration:
         assert "current_account_index" in saved  # legacy key retained
 
 
+class TestKiroCredentialGating:
+    """Gating of Kiro credential loading on the KIRO_ENABLED flag."""
+
+    @pytest.mark.asyncio
+    async def test_kiro_enabled_loads_kiro_accounts(self, tmp_path, monkeypatch):
+        """
+        What it does: With KIRO_ENABLED true, credentials.json entries load.
+        Purpose: Default behavior — Kiro accounts are loaded (backward compat).
+        """
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", True)
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", False)
+
+        test_json = tmp_path / "kiro.json"
+        test_json.write_text(json.dumps({"refreshToken": "rt", "region": "us-east-1"}))
+        creds_file = tmp_path / "creds.json"
+        creds_file.write_text(json.dumps([{"type": "json", "path": str(test_json)}]))
+
+        manager = AccountManager(credentials_file=str(creds_file), state_file=str(tmp_path / "state.json"))
+        await manager.load_credentials()
+
+        assert str(test_json.resolve()) in manager._accounts
+
+    @pytest.mark.asyncio
+    async def test_kiro_disabled_skips_kiro_accounts(self, tmp_path, monkeypatch):
+        """
+        What it does: With KIRO_ENABLED false, credentials.json is not read and
+                      no Kiro accounts are registered.
+        Purpose: Allow a Kiro-less deployment (Command-Code-only / ChatGPT-only).
+        """
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", False)
+
+        test_json = tmp_path / "kiro.json"
+        test_json.write_text(json.dumps({"refreshToken": "rt", "region": "us-east-1"}))
+        creds_file = tmp_path / "creds.json"
+        creds_file.write_text(json.dumps([{"type": "json", "path": str(test_json)}]))
+
+        manager = AccountManager(credentials_file=str(creds_file), state_file=str(tmp_path / "state.json"))
+        await manager.load_credentials()
+
+        assert len(manager._accounts) == 0
+
+    @pytest.mark.asyncio
+    async def test_kiro_disabled_still_loads_codex(self, tmp_path, monkeypatch):
+        """
+        What it does: With KIRO_ENABLED false but CHATGPT_ENABLED true, Codex
+                      accounts still load while Kiro entries are skipped.
+        Purpose: Disabling Kiro must not disable other account-based upstreams.
+        """
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", True)
+
+        kiro_json = tmp_path / "kiro.json"
+        kiro_json.write_text(json.dumps({"refreshToken": "rt", "region": "us-east-1"}))
+        creds_file = tmp_path / "creds.json"
+        creds_file.write_text(json.dumps([{"type": "json", "path": str(kiro_json)}]))
+
+        codex_file = tmp_path / "chatgpt_credentials.json"
+        codex_file.write_text(json.dumps([
+            {"provider": "chatgpt", "accessToken": "at", "refreshToken": "rt", "chatgptAccountId": "acc_1"},
+        ]))
+        monkeypatch.setattr("kiro.config.CHATGPT_CREDENTIALS_FILE", str(codex_file))
+
+        manager = AccountManager(credentials_file=str(creds_file), state_file=str(tmp_path / "state.json"))
+        await manager.load_credentials()
+
+        assert str(kiro_json.resolve()) not in manager._accounts
+        codex_accounts = [a for a in manager._accounts.values() if a.provider == "chatgpt"]
+        assert len(codex_accounts) == 1
+
+
 class TestCodexCredentialLoading:
     """Loading ChatGPT accounts from the dedicated Codex credentials file."""
 

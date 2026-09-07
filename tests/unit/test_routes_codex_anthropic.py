@@ -226,3 +226,64 @@ class TestMessagesCodex:
                       "messages": [{"role": "user", "content": "hi"}], "stream": False},
             )
             codex_cls.assert_not_called()
+
+
+# =============================================================================
+# KIRO_ENABLED gating (Anthropic API)
+# =============================================================================
+
+class TestKiroDisabledAnthropic:
+    """Tests for the KIRO_ENABLED flag on the Anthropic /v1/messages endpoint."""
+
+    def test_unmatched_model_returns_400_when_kiro_disabled(
+        self, test_client, valid_proxy_api_key, monkeypatch
+    ):
+        """
+        What it does: /v1/messages returns 400 for an unmatched model when
+                      KIRO_ENABLED is false (option A: clear error, no reroute).
+        Purpose: Symmetric to the OpenAI endpoint — both APIs behave the same.
+        """
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+        monkeypatch.setattr("kiro.config.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", False)
+
+        r = test_client.post(
+            "/v1/messages",
+            headers=_headers(valid_proxy_api_key),
+            json={
+                "model": "claude-sonnet-4.6",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": False,
+            },
+        )
+
+        assert r.status_code == 400
+        detail = r.json()["detail"]
+        assert "claude-sonnet-4.6" in detail
+
+    def test_error_when_kiro_disabled_does_not_reroute(
+        self, test_client, valid_proxy_api_key, monkeypatch
+    ):
+        """
+        What it does: An unmatched model still returns 400 even when Command Code
+                      is enabled.
+        Purpose: We never silently reroute a user's chosen model on Anthropic API.
+        """
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+        monkeypatch.setattr("kiro.config.COMMAND_CODE_ENABLED", True)
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", False)
+
+        r = test_client.post(
+            "/v1/messages",
+            headers=_headers(valid_proxy_api_key),
+            json={
+                "model": "claude-sonnet-4.6",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": False,
+            },
+        )
+
+        assert r.status_code == 400
+        assert "command_code" in r.json()["detail"]

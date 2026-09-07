@@ -1001,3 +1001,59 @@ class TestLifespanChatGPTBackend:
                 from main import lifespan, app
                 async with lifespan(app):
                     assert app.state.codex_backend is not None
+
+
+# =============================================================================
+# Test Class: validate_configuration() with KIRO_ENABLED
+# =============================================================================
+
+class TestValidateConfigurationKiroEnabled:
+    """Tests for the KIRO_ENABLED handling in main.validate_configuration().
+
+    What it does: Verifies the "at least one upstream" guard and that Kiro
+                  credential checks are skipped when Kiro is disabled.
+    Purpose: Ensure a Command-Code-only / ChatGPT-only gateway validates cleanly,
+             and that a fully-disabled config is rejected with a clear error.
+    """
+
+    def test_no_upstream_enabled_raises(self, monkeypatch):
+        """All upstreams disabled → RuntimeError('No upstream enabled')."""
+        import main
+        monkeypatch.setattr("main.PROXY_API_KEY", "test-key")
+        monkeypatch.setattr("main.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("main.CHATGPT_ENABLED", False)
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+
+        with pytest.raises(RuntimeError, match="No upstream enabled"):
+            main.validate_configuration()
+
+    def test_kiro_disabled_but_chatgpt_enabled_skips_kiro_checks(self, monkeypatch):
+        """Kiro off + ChatGPT on → validation passes without Kiro credentials."""
+        import main
+        monkeypatch.setattr("main.PROXY_API_KEY", "test-key")
+        monkeypatch.setattr("main.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("main.CHATGPT_ENABLED", True)
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+
+        # Should not raise even though no Kiro credentials are configured.
+        main.validate_configuration()
+
+    def test_kiro_disabled_but_command_code_enabled_skips_kiro_checks(self, monkeypatch):
+        """Kiro off + Command Code on → validation passes without Kiro credentials."""
+        import main
+        monkeypatch.setattr("main.PROXY_API_KEY", "test-key")
+        monkeypatch.setattr("main.COMMAND_CODE_ENABLED", True)
+        monkeypatch.setattr("main.CHATGPT_ENABLED", False)
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+
+        main.validate_configuration()
+
+    def test_missing_proxy_api_key_raises_regardless(self, monkeypatch):
+        """Empty PROXY_API_KEY always fails, even with an upstream enabled."""
+        import main
+        monkeypatch.setattr("main.PROXY_API_KEY", "")
+        monkeypatch.setattr("main.COMMAND_CODE_ENABLED", True)
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+
+        with pytest.raises(RuntimeError, match="PROXY_API_KEY"):
+            main.validate_configuration()

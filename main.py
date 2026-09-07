@@ -78,6 +78,7 @@ from kiro.config import (
     ACCOUNT_SYSTEM,
     ACCOUNTS_CONFIG_FILE,
     ACCOUNTS_STATE_FILE,
+    KIRO_ENABLED,
     COMMAND_CODE_ENABLED,
     COMMAND_CODE_API_KEY,
     CHATGPT_ENABLED,
@@ -243,10 +244,35 @@ def validate_configuration() -> None:
         logger.error("=" * 60)
         logger.error("")
         raise RuntimeError("PROXY_API_KEY is not configured")
-    
+
+    # Guard: at least one upstream must be enabled, otherwise the gateway has
+    # nothing to proxy to. Kiro is on by default, so this only trips when a user
+    # explicitly disables Kiro without enabling Command Code or ChatGPT.
+    from kiro.config import ACCOUNTS_CONFIG_FILE, KIRO_ENABLED
+    if not (KIRO_ENABLED or COMMAND_CODE_ENABLED or CHATGPT_ENABLED):
+        logger.error("")
+        logger.error("=" * 60)
+        logger.error("  CONFIGURATION ERROR: No upstream enabled!")
+        logger.error("=" * 60)
+        logger.error("  At least one upstream provider must be enabled.")
+        logger.error("  Enable one of the following in your .env file:")
+        logger.error("")
+        logger.error('    KIRO_ENABLED="true"           # Amazon Q / CodeWhisperer')
+        logger.error('    COMMAND_CODE_ENABLED="true"    # Command Code')
+        logger.error('    CHATGPT_ENABLED="true"         # ChatGPT (Codex)')
+        logger.error("=" * 60)
+        logger.error("")
+        raise RuntimeError("No upstream enabled")
+
+    # When the Kiro upstream is disabled, no Kiro credentials are required.
+    # The other upstreams validate their own configuration at startup, so we
+    # skip the Kiro-centric credential checks entirely.
+    if not KIRO_ENABLED:
+        logger.debug("KIRO_ENABLED is false; skipping Kiro credential validation")
+        return
+
     # Priority 1: Check if credentials.json exists (Account System)
     # If it exists, legacy .env validation is skipped
-    from kiro.config import ACCOUNTS_CONFIG_FILE
     creds_json_path = Path(ACCOUNTS_CONFIG_FILE)
     
     if creds_json_path.exists():
@@ -404,7 +430,12 @@ async def lifespan(app: FastAPI):
         if api_region:
             entry["api_region"] = api_region
     
-    if ACCOUNT_SYSTEM:
+    # The .env → credentials.json migration only produces Kiro credential entries.
+    # Skip it entirely when the Kiro upstream is disabled so a Command-Code-only
+    # or ChatGPT-only deployment never fabricates a Kiro credentials.json.
+    if not KIRO_ENABLED:
+        logger.info("KIRO_ENABLED is false; skipping .env → credentials.json migration")
+    elif ACCOUNT_SYSTEM:
         # Account system enabled: create credentials.json ONCE (migration)
         if not creds_path.exists():
             if has_refresh_token or has_creds_file or has_cli_db:
@@ -495,35 +526,46 @@ async def lifespan(app: FastAPI):
     # Initialize first working account (blocking)
     # ==============================================================================
     all_accounts = list(app.state.account_manager._accounts.keys())
-    
+
+    # A gateway with only a key-based upstream (Command Code) and no account-based
+    # upstream (Kiro / ChatGPT) legitimately has zero accounts. Only Command Code
+    # can run account-less, so we allow an empty account set only when it is the
+    # sole enabled upstream.
+    has_account_upstream = KIRO_ENABLED or CHATGPT_ENABLED
     if not all_accounts:
-        logger.error("No accounts configured in credentials.json")
-        raise RuntimeError("No accounts configured in credentials.json")
-    
-    # Determine start index from state.json
-    start_index = app.state.account_manager._current_account_index
-    
-    # Try to initialize accounts (full circle)
-    initialized = False
-    
-    for i in range(len(all_accounts)):
-        current_index = (start_index + i) % len(all_accounts)
-        account_id = all_accounts[current_index]
-        
-        logger.info(f"Attempting to initialize account: {account_id}")
-        
-        success = await app.state.account_manager._initialize_account(account_id)
-        
-        if success:
-            logger.info(f"Successfully initialized account: {account_id}")
-            initialized = True
-            break
-        else:
-            logger.warning(f"Failed to initialize account: {account_id}")
-    
-    if not initialized:
-        logger.error("Failed to initialize any account. Check your credentials.")
-        raise RuntimeError("Failed to initialize any account")
+        if has_account_upstream:
+            logger.error("No accounts configured for the enabled account-based upstream(s)")
+            raise RuntimeError("No accounts configured in credentials.json")
+        if COMMAND_CODE_ENABLED:
+            logger.info(
+                "No accounts configured; running with Command Code as the only upstream"
+            )
+        # Skip the account-init loop entirely (nothing to initialize).
+    else:
+        # Determine start index from state.json
+        start_index = app.state.account_manager._current_account_index
+
+        # Try to initialize accounts (full circle)
+        initialized = False
+
+        for i in range(len(all_accounts)):
+            current_index = (start_index + i) % len(all_accounts)
+            account_id = all_accounts[current_index]
+
+            logger.info(f"Attempting to initialize account: {account_id}")
+
+            success = await app.state.account_manager._initialize_account(account_id)
+
+            if success:
+                logger.info(f"Successfully initialized account: {account_id}")
+                initialized = True
+                break
+            else:
+                logger.warning(f"Failed to initialize account: {account_id}")
+
+        if not initialized:
+            logger.error("Failed to initialize any account. Check your credentials.")
+            raise RuntimeError("Failed to initialize any account")
     
     # Save initial state
     await app.state.account_manager._save_state()

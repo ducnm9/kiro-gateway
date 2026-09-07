@@ -115,6 +115,132 @@ class TestResolveUpstreamChatGPT:
         assert resolve_upstream("deepseek/deepseek-v4-pro") == "command_code"
 
 
+class TestResolveUpstreamKiroDisabled:
+    """Tests for KIRO_ENABLED gating in resolve_upstream."""
+
+    def test_unmatched_model_returns_kiro_when_enabled(self, monkeypatch):
+        """
+        What it does: An unmatched bare model routes to Kiro when KIRO_ENABLED is true.
+        Purpose: Backward-compatible default behavior (Kiro is the fallback).
+        """
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", True)
+        monkeypatch.setattr("kiro.config.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", False)
+
+        assert resolve_upstream("claude-sonnet-4.6") == "kiro"
+
+    def test_unmatched_model_returns_kiro_disabled_when_off(self, monkeypatch):
+        """
+        What it does: An unmatched model returns "kiro_disabled" when Kiro is off.
+        Purpose: Option A — never silently reroute; caller turns this into an error.
+        """
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+        monkeypatch.setattr("kiro.config.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", False)
+
+        assert resolve_upstream("claude-sonnet-4.6") == "kiro_disabled"
+
+    def test_codex_model_still_routes_when_kiro_disabled(self, monkeypatch):
+        """
+        What it does: A Codex model still routes to chatgpt when Kiro is off.
+        Purpose: Disabling Kiro must not break other enabled upstreams.
+        """
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", True)
+        monkeypatch.setattr("kiro.config.CHATGPT_MODEL_IDS", {"gpt-5.5"})
+
+        assert resolve_upstream("gpt-5.5") == "chatgpt"
+
+    def test_command_code_model_still_routes_when_kiro_disabled(self, monkeypatch):
+        """
+        What it does: A slash model still routes to command_code when Kiro is off.
+        Purpose: Disabling Kiro must not break Command Code routing.
+        """
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+        monkeypatch.setattr("kiro.config.COMMAND_CODE_ENABLED", True)
+
+        assert resolve_upstream("deepseek/deepseek-v4-pro") == "command_code"
+
+    def test_unmatched_model_kiro_disabled_but_other_upstream_enabled(self, monkeypatch):
+        """
+        What it does: An unmatched model still returns "kiro_disabled" even when
+                      another upstream is enabled.
+        Purpose: We never reroute a user's chosen model to a different upstream.
+        """
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+        monkeypatch.setattr("kiro.config.COMMAND_CODE_ENABLED", True)
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", False)
+
+        # A bare model (no slash) that is not a Codex id cannot go to CC either.
+        assert resolve_upstream("claude-sonnet-4.6") == "kiro_disabled"
+
+
+class TestEnabledUpstreams:
+    """Tests for the enabled_upstreams() helper."""
+
+    def test_all_enabled(self, monkeypatch):
+        """All three flags on → all three names in precedence order."""
+        from kiro.upstream_base import enabled_upstreams
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", True)
+        monkeypatch.setattr("kiro.config.COMMAND_CODE_ENABLED", True)
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", True)
+
+        assert enabled_upstreams() == ["kiro", "command_code", "chatgpt"]
+
+    def test_none_enabled(self, monkeypatch):
+        """All flags off → empty list."""
+        from kiro.upstream_base import enabled_upstreams
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+        monkeypatch.setattr("kiro.config.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", False)
+
+        assert enabled_upstreams() == []
+
+    def test_only_chatgpt(self, monkeypatch):
+        """Only ChatGPT on → single-element list."""
+        from kiro.upstream_base import enabled_upstreams
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+        monkeypatch.setattr("kiro.config.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", True)
+
+        assert enabled_upstreams() == ["chatgpt"]
+
+
+class TestKiroDisabledErrorMessage:
+    """Tests for the kiro_disabled_error_message() helper."""
+
+    def test_message_lists_enabled_upstreams(self, monkeypatch):
+        """
+        What it does: Message names the requested model and enabled upstream(s).
+        Purpose: Actionable, user-friendly error (project UX requirement).
+        """
+        from kiro.upstream_base import kiro_disabled_error_message
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+        monkeypatch.setattr("kiro.config.COMMAND_CODE_ENABLED", True)
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", False)
+
+        msg = kiro_disabled_error_message("claude-sonnet-4.6")
+
+        assert "claude-sonnet-4.6" in msg
+        assert "command_code" in msg
+        assert "KIRO_ENABLED" in msg
+
+    def test_message_when_no_upstream_enabled(self, monkeypatch):
+        """
+        What it does: Message guides the user to enable an upstream when none are.
+        Purpose: Covers the degenerate all-disabled case.
+        """
+        from kiro.upstream_base import kiro_disabled_error_message
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+        monkeypatch.setattr("kiro.config.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", False)
+
+        msg = kiro_disabled_error_message("some-model")
+
+        assert "some-model" in msg
+        assert "No upstream is enabled" in msg
+
+
 # =============================================================================
 # Tests for CommandCodeBackend
 # =============================================================================

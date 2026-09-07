@@ -326,3 +326,106 @@ class TestModelsMergeCodex:
         assert r.status_code == 200
         ids = [m["id"] for m in r.json()["data"]]
         assert "gpt-5.5" not in ids
+
+
+# =============================================================================
+# KIRO_ENABLED gating (OpenAI API)
+# =============================================================================
+
+class TestKiroDisabledOpenAI:
+    """Tests for the KIRO_ENABLED flag on the OpenAI endpoints."""
+
+    def test_unmatched_model_returns_400_when_kiro_disabled(
+        self, test_client, valid_proxy_api_key, monkeypatch
+    ):
+        """
+        What it does: /v1/chat/completions returns 400 for an unmatched model
+                      when KIRO_ENABLED is false (option A: clear error, no reroute).
+        Purpose: Ensure disabling Kiro produces an actionable error instead of
+                 hitting a non-existent Kiro backend.
+        """
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+        monkeypatch.setattr("kiro.config.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", False)
+
+        r = test_client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": f"Bearer {valid_proxy_api_key}"},
+            json={
+                "model": "claude-sonnet-4.6",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": False,
+            },
+        )
+
+        assert r.status_code == 400
+        detail = r.json()["detail"]
+        assert "claude-sonnet-4.6" in detail
+        assert "KIRO_ENABLED" in detail or "not available" in detail
+
+    def test_error_when_kiro_disabled_does_not_reroute_to_other_upstream(
+        self, test_client, valid_proxy_api_key, monkeypatch
+    ):
+        """
+        What it does: An unmatched model still returns 400 even when another
+                      upstream (Command Code) is enabled.
+        Purpose: We never silently reroute a user's chosen model.
+        """
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+        monkeypatch.setattr("kiro.config.COMMAND_CODE_ENABLED", True)
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", False)
+
+        r = test_client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": f"Bearer {valid_proxy_api_key}"},
+            json={
+                "model": "claude-sonnet-4.6",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": False,
+            },
+        )
+
+        assert r.status_code == 400
+        assert "command_code" in r.json()["detail"]
+
+    def test_models_excludes_kiro_base_list_when_disabled(
+        self, test_client, valid_proxy_api_key, monkeypatch
+    ):
+        """
+        What it does: /v1/models omits the Kiro base list when KIRO_ENABLED is
+                      false, returning only merged upstream models.
+        Purpose: A Kiro-disabled gateway must not advertise Kiro/Claude models.
+        """
+        from kiro.upstream_codex import CodexBackend
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+        prev_backend = getattr(test_client.app.state, "codex_backend", None)
+        test_client.app.state.codex_backend = CodexBackend()
+        try:
+            r = test_client.get(
+                "/v1/models", headers={"Authorization": f"Bearer {valid_proxy_api_key}"}
+            )
+            assert r.status_code == 200
+            data = r.json()["data"]
+            # No Kiro-derived entries (owned_by="anthropic" / "Claude model via Kiro API")
+            assert all(m["owned_by"] != "anthropic" for m in data)
+            # Codex models still present
+            assert any(m["id"] == "gpt-5.5" for m in data)
+        finally:
+            # Restore shared app.state to avoid leaking into other tests.
+            test_client.app.state.codex_backend = prev_backend
+
+    def test_models_still_includes_kiro_base_list_when_enabled(
+        self, test_client, valid_proxy_api_key, monkeypatch
+    ):
+        """
+        What it does: /v1/models includes Kiro models when KIRO_ENABLED is true.
+        Purpose: Backward-compat — default behavior is unchanged.
+        """
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", True)
+
+        r = test_client.get(
+            "/v1/models", headers={"Authorization": f"Bearer {valid_proxy_api_key}"}
+        )
+        assert r.status_code == 200
+        data = r.json()["data"]
+        assert any(m["owned_by"] == "anthropic" for m in data)

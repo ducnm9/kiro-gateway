@@ -254,19 +254,49 @@ class AccountManager:
         Invalid entries are skipped with warnings.
         Folders are scanned for credential files.
         """
-        creds_path = Path(self._credentials_file).expanduser()
-        
-        if not creds_path.exists():
-            logger.warning(f"Credentials file not found: {self._credentials_file}")
-            return
-        
-        try:
-            with open(creds_path, 'r', encoding='utf-8') as f:
-                self._credentials_config = json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to load credentials: {e}")
-            return
-        
+        # Kiro accounts come from credentials.json. Skip loading them entirely
+        # when the Kiro upstream is disabled (KIRO_ENABLED=false), mirroring the
+        # early-return pattern used by _load_codex_credentials. This lets a
+        # Command-Code-only or ChatGPT-only gateway run without Kiro credentials.
+        # Import inside the method so config toggles are re-read on reload and so
+        # test suites that reload config see current values.
+        from kiro.config import KIRO_ENABLED
+
+        if not KIRO_ENABLED:
+            logger.info("KIRO_ENABLED is false; skipping Kiro credential loading")
+        else:
+            creds_path = Path(self._credentials_file).expanduser()
+
+            if not creds_path.exists():
+                logger.warning(f"Credentials file not found: {self._credentials_file}")
+            else:
+                try:
+                    with open(creds_path, 'r', encoding='utf-8') as f:
+                        self._credentials_config = json.load(f)
+                except Exception as e:
+                    logger.error(f"Failed to load credentials: {e}")
+                    self._credentials_config = []
+
+                # Process each credential entry
+                self._load_kiro_credential_entries()
+
+        # Load ChatGPT (Codex) accounts from their dedicated credentials file
+        # (only when the feature is enabled). Kiro behavior is unaffected.
+        self._load_codex_credentials()
+
+        logger.info(f"Loaded {len(self._accounts)} account(s) from credentials")
+
+    def _load_kiro_credential_entries(self) -> None:
+        """Register Kiro accounts from the parsed credentials.json config.
+
+        Iterates ``self._credentials_config`` (already loaded JSON list) and adds
+        an ``Account`` per valid, enabled entry. Supports ``refresh_token``,
+        ``json``, and ``sqlite`` credential types, including folder scanning for
+        the file-based types.
+
+        This is only invoked when ``KIRO_ENABLED`` is true. Invalid or disabled
+        entries are skipped with a warning.
+        """
         # Process each credential entry
         for entry in self._credentials_config:
             cred_type = entry.get("type")
@@ -356,12 +386,6 @@ class AccountManager:
                 logger.debug(f"Added account: {account_id}")
             else:
                 logger.warning(f"Credential path not found: {path}")
-
-        # Load ChatGPT (Codex) accounts from their dedicated credentials file
-        # (only when the feature is enabled). Kiro behavior is unaffected.
-        self._load_codex_credentials()
-
-        logger.info(f"Loaded {len(self._accounts)} account(s) from credentials")
 
     def _load_codex_credentials(self) -> None:
         """Load ChatGPT (Codex) accounts from the Codex credentials file.

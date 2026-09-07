@@ -57,7 +57,7 @@ from kiro.http_client import KiroHttpClient
 from kiro.utils import generate_conversation_id
 from kiro.config import WEB_SEARCH_ENABLED
 from kiro.mcp_tools import handle_native_web_search
-from kiro.upstream_base import resolve_upstream
+from kiro.upstream_base import resolve_upstream, kiro_disabled_error_message
 from kiro.converters_cc import build_cc_payload
 from kiro.streaming_cc import collect_cc_response, stream_cc_to_openai
 from kiro.upstream_cc import raise_cc_http_error
@@ -151,25 +151,32 @@ async def get_models(request: Request):
         ModelList with available models in consistent format (with dots)
     """
     logger.info("Request to /v1/models")
-    
-    # Get available models based on mode
-    if request.app.state.account_system:
-        # Account system: collect models from all initialized accounts
-        available_model_ids = request.app.state.account_manager.get_all_available_models()
-    else:
-        # Legacy: use resolver from first account
-        account = request.app.state.account_manager.get_first_account()
-        available_model_ids = account.model_resolver.get_available_models()
-    
-    # Build OpenAI-compatible model list
-    openai_models = [
-        OpenAIModel(
-            id=model_id,
-            owned_by="anthropic",
-            description="Claude model via Kiro API"
-        )
-        for model_id in available_model_ids
-    ]
+
+    from kiro.config import KIRO_ENABLED
+
+    # Base model list comes from the Kiro upstream. When Kiro is disabled we skip
+    # it entirely (no Kiro accounts are loaded) and rely solely on the Command
+    # Code / ChatGPT merges below.
+    openai_models = []
+    if KIRO_ENABLED:
+        # Get available models based on mode
+        if request.app.state.account_system:
+            # Account system: collect models from all initialized accounts
+            available_model_ids = request.app.state.account_manager.get_all_available_models()
+        else:
+            # Legacy: use resolver from first account
+            account = request.app.state.account_manager.get_first_account()
+            available_model_ids = account.model_resolver.get_available_models()
+
+        # Build OpenAI-compatible model list
+        openai_models = [
+            OpenAIModel(
+                id=model_id,
+                owned_by="anthropic",
+                description="Claude model via Kiro API"
+            )
+            for model_id in available_model_ids
+        ]
     
     # Merge Command Code models when the upstream is enabled
     cc_backend = getattr(request.app.state, "command_code_backend", None)
@@ -477,6 +484,13 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
         return await _handle_command_code_completion(request, request_data)
     if _upstream == "chatgpt":
         return await _handle_chatgpt_completion(request, request_data)
+    if _upstream == "kiro_disabled":
+        # Kiro upstream is off and the model matched no other enabled upstream.
+        # Return a clear error rather than routing to a non-existent backend.
+        raise HTTPException(
+            status_code=400,
+            detail=kiro_disabled_error_message(request_data.model),
+        )
     
     # Check for truncation recovery opportunities
     from kiro.truncation_state import get_tool_truncation, get_content_truncation

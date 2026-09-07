@@ -34,7 +34,12 @@ def resolve_upstream(raw_model: str) -> str:
        Codex model id (bare name in ``CHATGPT_MODEL_IDS``) → ``"chatgpt"``.
     2. Command Code: when ``COMMAND_CODE_ENABLED`` and the model is
        provider-qualified (contains ``/``) → ``"command_code"``.
-    3. Everything else → ``"kiro"``.
+    3. Everything else:
+       - when ``KIRO_ENABLED`` → ``"kiro"`` (native passthrough, default).
+       - when Kiro is disabled → ``"kiro_disabled"``. The caller must turn this
+         into a clear client-facing error instead of routing to a non-existent
+         Kiro backend (transparency: we never silently reroute a user's model
+         to a different upstream).
 
     The Codex check runs first and matches only bare, registered ids, so it
     never collides with Command Code's ``/``-qualified models or with arbitrary
@@ -47,10 +52,62 @@ def resolve_upstream(raw_model: str) -> str:
         raw_model: The client-supplied model name, before normalization.
 
     Returns:
-        Backend name: ``"chatgpt"``, ``"command_code"``, or ``"kiro"``.
+        Backend name: ``"chatgpt"``, ``"command_code"``, ``"kiro"``, or
+        ``"kiro_disabled"`` (unmatched model while the Kiro upstream is off).
     """
     if config.CHATGPT_ENABLED and _is_codex_model(raw_model):
         return "chatgpt"
     if config.COMMAND_CODE_ENABLED and "/" in raw_model:
         return "command_code"
-    return "kiro"
+    if config.KIRO_ENABLED:
+        return "kiro"
+    return "kiro_disabled"
+
+
+def enabled_upstreams() -> list:
+    """Return the list of currently enabled upstream provider names.
+
+    Order reflects routing precedence and user-facing listing:
+    ``["kiro", "command_code", "chatgpt"]`` filtered by their enable flags.
+
+    Returns:
+        A list of enabled upstream names (may be empty if all are disabled).
+    """
+    upstreams = []
+    if config.KIRO_ENABLED:
+        upstreams.append("kiro")
+    if config.COMMAND_CODE_ENABLED:
+        upstreams.append("command_code")
+    if config.CHATGPT_ENABLED:
+        upstreams.append("chatgpt")
+    return upstreams
+
+
+def kiro_disabled_error_message(raw_model: str) -> str:
+    """Build a clear, actionable error message for an unroutable model.
+
+    Used when ``resolve_upstream`` returns ``"kiro_disabled"``: the Kiro upstream
+    is off and the requested model matched no other enabled upstream.
+
+    Args:
+        raw_model: The client-supplied model name that could not be routed.
+
+    Returns:
+        A user-friendly message explaining why the model is unavailable and how
+        to fix it.
+    """
+    enabled = [u for u in enabled_upstreams()]
+    if enabled:
+        enabled_str = ", ".join(enabled)
+        hint = (
+            f"The Kiro upstream is disabled (KIRO_ENABLED=false). "
+            f"Currently enabled upstream(s): {enabled_str}. "
+            f"Use a model served by an enabled upstream, or set KIRO_ENABLED=true "
+            f"to route this model to Kiro."
+        )
+    else:
+        hint = (
+            "No upstream is enabled. Enable at least one of KIRO_ENABLED, "
+            "COMMAND_CODE_ENABLED, or CHATGPT_ENABLED."
+        )
+    return f"Model '{raw_model}' is not available. {hint}"

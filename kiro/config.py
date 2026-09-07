@@ -566,6 +566,26 @@ ACCOUNT_CACHE_TTL: int = int(os.getenv("ACCOUNT_CACHE_TTL", "43200"))
 STATE_SAVE_INTERVAL_SECONDS: int = int(os.getenv("STATE_SAVE_INTERVAL_SECONDS", "10"))
 
 # ==================================================================================================
+# Kiro Upstream Settings (Primary Upstream)
+# ==================================================================================================
+
+# Enable Kiro (Amazon Q Developer / AWS CodeWhisperer) as an upstream provider.
+# When enabled (default), the gateway loads Kiro credentials and routes any model
+# not matched by another upstream to Kiro (native passthrough behavior).
+#
+# When disabled, the gateway skips Kiro credential loading entirely and does NOT
+# route unmatched models to Kiro. Requests for models that no enabled upstream
+# can handle receive a clear error instead of being sent to a non-existent Kiro
+# backend. This lets users run a Command-Code-only or ChatGPT-only gateway
+# without any Kiro credentials.
+#
+# Default: true (fully backward compatible - existing deployments are unaffected).
+#
+# IMPORTANT: At least one upstream (Kiro, Command Code, or ChatGPT) must be enabled,
+# otherwise the gateway has nothing to proxy to and will refuse to start.
+KIRO_ENABLED: bool = os.getenv("KIRO_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# ==================================================================================================
 # Command Code Settings (Optional Second Upstream)
 # ==================================================================================================
 

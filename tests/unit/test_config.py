@@ -632,10 +632,12 @@ class TestFallbackModelsIntegration:
         resolver = ModelResolver(cache=cache, hidden_models={})
         
         print("\nAction: Testing normalization with dash format...")
-        # Test that dash format (claude-opus-4-5) is normalized and found
+        # Test that dash format (e.g. claude-opus-4-6) is normalized and found.
+        # Model versions must match the current FALLBACK_MODELS list, otherwise
+        # the resolver falls back to passthrough instead of a cache hit.
         test_cases = [
-            ("claude-opus-4-5", "claude-opus-4.5"),  # Dash → Dot
-            ("claude-sonnet-4-5", "claude-sonnet-4.5"),  # Dash → Dot
+            ("claude-opus-4-6", "claude-opus-4.6"),  # Dash → Dot
+            ("claude-sonnet-4-6", "claude-sonnet-4.6"),  # Dash → Dot
             ("claude-haiku-4-5", "claude-haiku-4.5"),  # Dash → Dot
         ]
         
@@ -970,6 +972,47 @@ class TestAccountSystemConfig:
         print(f"Comparing STATE_SAVE_INTERVAL_SECONDS: Expected 10, Got {config_module.STATE_SAVE_INTERVAL_SECONDS}")
         assert config_module.STATE_SAVE_INTERVAL_SECONDS == 10
 
+
+
+# ==================================================================================================
+# Tests for KIRO_ENABLED Configuration
+# ==================================================================================================
+
+class TestKiroEnabledConfig:
+    """Tests for the Kiro upstream enable flag (KIRO_ENABLED)."""
+
+    def _reload(self):
+        """Reload config module and return it."""
+        from importlib import reload
+        import kiro.config as config_module
+        reload(config_module)
+        return config_module
+
+    def test_kiro_enabled_default_true(self, monkeypatch):
+        """
+        What it does: Verifies KIRO_ENABLED defaults to True.
+        Purpose: Full backward compatibility — existing deployments keep Kiro on.
+        """
+        monkeypatch.delenv("KIRO_ENABLED", raising=False)
+
+        config_module = self._reload()
+
+        assert config_module.KIRO_ENABLED is True
+
+    @pytest.mark.parametrize("value,expected", [
+        ("true", True), ("True", True), ("TRUE", True), ("1", True), ("yes", True), ("YES", True),
+        ("false", False), ("False", False), ("0", False), ("no", False), ("", False), ("maybe", False),
+    ])
+    def test_kiro_enabled_parsing(self, monkeypatch, value, expected):
+        """
+        What it does: Verifies KIRO_ENABLED truthy/falsy parsing.
+        Purpose: Only explicit truthy strings keep Kiro on; anything else disables it.
+        """
+        monkeypatch.setenv("KIRO_ENABLED", value)
+
+        config_module = self._reload()
+
+        assert config_module.KIRO_ENABLED is expected
 
 
 # ==================================================================================================
