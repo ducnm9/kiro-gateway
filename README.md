@@ -607,6 +607,24 @@ run the browser login flow itself.
 ]
 ```
 
+#### Import helper
+
+Instead of copying tokens by hand, use the importer to read the token file left
+by a ChatGPT login in **Codex CLI** (`~/.codex/auth.json`) or **OpenCode**
+(`~/.local/share/opencode/auth.json`) and append an account to
+`chatgpt_credentials.json`:
+
+```bash
+# Auto-detect the source; run once per logged-in account
+python scripts/import_codex_auth.py --label acc1
+
+# Or point at a specific file / preview without writing
+python scripts/import_codex_auth.py --source ~/.codex/auth.json --dry-run
+```
+
+Tokens stay on your machine; the file is written with owner-only permissions
+(0600). Re-running for the same account updates it in place.
+
 ### How routing and multi-account work
 
 - Requests for a **Codex model id** (bare names such as `gpt-5.5`, see

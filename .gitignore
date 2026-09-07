@@ -2,6 +2,7 @@
 .env
 .env.local
 credentials.json
+chatgpt_credentials.json
 state.json
 
 # IDE
