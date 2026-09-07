@@ -63,6 +63,7 @@ credentials (`Permission denied`) → "Failed to initialize any account"**.
 | `KIRO_CLI_DB_FILE` | Chế độ SQLite (mặc định). Gateway đọc + tự lưu token vào DB kiro-cli — session luôn fresh |
 | `KIRO_CREDS_FILE` | Chế độ credentials file (thay vì SQLite) |
 | `COMMAND_CODE_*` | Bật backend Command Code (67 models, tên dạng `provider/model`) |
+| `CHATGPT_ENABLED` + mount `chatgpt_credentials.json` | Bật ChatGPT (Codex) upstream; `./podman-run.sh` tự mount file credentials khi `CHATGPT_ENABLED=true` trong `.env`. Model tự discover từ API (Go: `gpt-5.6-luna`/`gpt-5.6-terra`/`gpt-5.4-mini`) |
 | `--restart unless-stopped` | Tự động chạy lại sau reboot |
 
 ## 3. Kiểm tra sau khi chạy

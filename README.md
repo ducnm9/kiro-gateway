@@ -627,8 +627,8 @@ Tokens stay on your machine; the file is written with owner-only permissions
 
 ### How routing and multi-account work
 
-- Requests for a **Codex model id** (bare names such as `gpt-5.5`, see
-  `CHATGPT_MODELS` in `config.py`) route to ChatGPT; everything else is unchanged.
+- Requests for a **Codex model id** (bare names such as `gpt-5.6-luna`) route to
+  ChatGPT; everything else is unchanged.
 - **fill-first** (default): use one account until it errors or hits its quota
   (429 `usage_limit_reached`), then automatically fail over to the next account.
 - **round-robin**: rotate accounts every `CHATGPT_STICKY_LIMIT` successful
@@ -636,6 +636,25 @@ Tokens stay on your machine; the file is written with owner-only permissions
 - Quota exhaustion, capacity, and transient upstream errors trigger failover; a
   malformed request (400/422) is returned immediately. OAuth tokens refresh
   automatically on 401/403.
+
+### Model discovery (and Plus/Pro)
+
+Codex has no public model-list contract, so the gateway **discovers** the
+account's available models from the Codex model API at startup and on a timer,
+then routes and lists exactly those. This means new models — and models unlocked
+by upgrading **Go → Plus/Pro** — appear automatically, no config change needed.
+
+- Discovery is **on by default** (`CHATGPT_MODEL_DISCOVERY=true`) and uses the
+  first configured Codex account to authenticate the lookup.
+- The client version reported to the API must be **≥ 0.145.0** (default) or newer
+  models are hidden. Set via `CHATGPT_USER_AGENT` / `CHATGPT_CLIENT_VERSION`.
+- If discovery is disabled or fails, the gateway falls back to the static
+  `CHATGPT_MODELS` list in `config.py`.
+- **Plan caveat:** the discovered list is what your plan *lists*, which is not
+  always what it can *call*. On a **ChatGPT Go** account, `gpt-5.6-luna`,
+  `gpt-5.6-terra`, and `gpt-5.4-mini` are callable; some listed models (e.g.
+  `gpt-5.5`) return `model_not_found` until you're on a higher plan. The gateway
+  surfaces the upstream error as-is rather than hiding the model.
 
 ### Options
 
@@ -645,6 +664,9 @@ Tokens stay on your machine; the file is written with owner-only permissions
 | `CHATGPT_CREDENTIALS_FILE`     | `chatgpt_credentials.json`                          | JSON list of Codex account tokens              |
 | `CHATGPT_STRATEGY`             | `fill-first`                                        | `fill-first` or `round-robin`                  |
 | `CHATGPT_STICKY_LIMIT`         | `3`                                                 | Requests per account before rotating (RR only) |
+| `CHATGPT_MODEL_DISCOVERY`      | `true`                                              | Fetch the live model set from the Codex API    |
+| `CHATGPT_MODEL_REFRESH_INTERVAL` | `3600`                                            | Model-list refresh interval (sec); 0 = once    |
+| `CHATGPT_USER_AGENT`           | `codex_cli_rs/0.145.0`                              | Codex client identity (version ≥ 0.145.0)      |
 | `CHATGPT_BASE_URL`             | `https://chatgpt.com/backend-api/codex/responses`   | Codex Responses endpoint                       |
 | `CHATGPT_OAUTH_TOKEN_URL`      | `https://auth.openai.com/oauth/token`               | OAuth token refresh endpoint                   |
 
