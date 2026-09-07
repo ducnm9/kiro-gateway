@@ -56,17 +56,23 @@ import base64
 import binascii
 import json
 import os
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
-# Default source locations, tried in order for auto-detection.
+# Default JSON source locations, tried in order for auto-detection.
 DEFAULT_SOURCES = [
     Path("~/.codex/auth.json").expanduser(),                       # Codex CLI
-    Path("~/.local/share/opencode/auth.json").expanduser(),        # OpenCode (Linux)
+    Path("~/.local/share/opencode/auth.json").expanduser(),        # OpenCode (older, file-based)
     Path("~/Library/Application Support/opencode/auth.json").expanduser(),  # OpenCode (macOS)
 ]
+
+# OpenCode (v0.x, "opencode2") stores credentials in a SQLite DB, not auth.json.
+# The `credential` table row with integration_id='openai' holds the OAuth JSON
+# in its `value` column: {"type","refresh","access","expires","metadata":{"accountID"}}.
+DEFAULT_OPENCODE_DB = Path("~/.local/share/opencode/opencode.db").expanduser()
 
 DEFAULT_OUTPUT = Path("chatgpt_credentials.json")
 
@@ -222,6 +228,18 @@ def extract_account(source_path: Path) -> Dict[str, Any]:
     if not account_id:
         account_id = _extract_account_id(id_token, access_token)
 
+    return _bag_to_entry(access_token, refresh_token, id_token, account_id)
+
+
+def _bag_to_entry(
+    access_token: Optional[str],
+    refresh_token: Optional[str],
+    id_token: Optional[str],
+    account_id: Optional[str],
+) -> Dict[str, Any]:
+    """Build a gateway credential entry from extracted token fields."""
+    if not account_id:
+        account_id = _extract_account_id(id_token, access_token)
     entry: Dict[str, Any] = {
         "provider": "chatgpt",
         "enabled": True,
@@ -233,6 +251,79 @@ def extract_account(source_path: Path) -> Dict[str, Any]:
     if account_id:
         entry["chatgptAccountId"] = account_id
     return entry
+
+
+def extract_accounts_from_opencode_db(db_path: Path) -> List[Dict[str, Any]]:
+    """Extract Codex credential entries from an OpenCode SQLite database.
+
+    OpenCode (v0.x, "opencode2") stores OAuth credentials in the ``credential``
+    table. The row(s) with ``integration_id='openai'`` carry a JSON blob in the
+    ``value`` column of the shape::
+
+        {"type","methodID","refresh","access","expires","metadata":{"accountID"}}
+
+    Args:
+        db_path: Path to ``opencode.db``.
+
+    Returns:
+        A list of gateway credential entries (one per OpenAI credential row).
+
+    Raises:
+        SystemExit: If the DB/table is missing or holds no OpenAI credential.
+    """
+    if not db_path.exists():
+        sys.exit(f"ERROR: OpenCode database not found: {db_path}")
+
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error as e:
+        sys.exit(f"ERROR: cannot open {db_path}: {e}")
+
+    try:
+        cur = con.cursor()
+        has_table = cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='credential'"
+        ).fetchone()
+        if not has_table:
+            sys.exit(f"ERROR: no 'credential' table in {db_path} (unexpected OpenCode schema)")
+        rows = cur.execute(
+            "SELECT value FROM credential WHERE integration_id = 'openai' AND active = 1"
+        ).fetchall()
+    except sqlite3.Error as e:
+        sys.exit(f"ERROR: reading credentials from {db_path}: {e}")
+    finally:
+        con.close()
+
+    if not rows:
+        sys.exit(
+            f"ERROR: no active OpenAI credential in {db_path}. "
+            "Log in to ChatGPT in OpenCode first."
+        )
+
+    entries: List[Dict[str, Any]] = []
+    for (value,) in rows:
+        if isinstance(value, (bytes, bytearray)):
+            value = value.decode("utf-8", errors="replace")
+        try:
+            data = json.loads(value)
+        except (ValueError, json.JSONDecodeError):
+            print("WARNING: skipping an OpenAI credential row with non-JSON value.", file=sys.stderr)
+            continue
+        access_token = _first_str(data, ("access", "access_token", "accessToken"))
+        refresh_token = _first_str(data, ("refresh", "refresh_token", "refreshToken"))
+        id_token = _first_str(data, ("id", "id_token", "idToken"))
+        account_id = None
+        meta = data.get("metadata")
+        if isinstance(meta, dict):
+            account_id = _first_str(meta, ("accountID", "account_id", "chatgpt_account_id"))
+        if not (access_token and refresh_token):
+            print("WARNING: skipping an OpenAI credential row missing access/refresh.", file=sys.stderr)
+            continue
+        entries.append(_bag_to_entry(access_token, refresh_token, id_token, account_id))
+
+    if not entries:
+        sys.exit(f"ERROR: OpenAI credential rows in {db_path} had no usable tokens.")
+    return entries
 
 
 def _load_output(output_path: Path) -> List[Dict[str, Any]]:
@@ -258,6 +349,23 @@ def _write_output(output_path: Path, entries: List[Dict[str, Any]]) -> None:
         f.write("\n")
 
 
+def _same_account(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    """Two entries are the same account by chatgptAccountId, else by refreshToken."""
+    if a.get("chatgptAccountId") and b.get("chatgptAccountId"):
+        return a["chatgptAccountId"] == b["chatgptAccountId"]
+    return a.get("refreshToken") == b.get("refreshToken")
+
+
+def _merge_entry(entries: List[Dict[str, Any]], new_entry: Dict[str, Any]) -> str:
+    """Merge one entry into the list (update in place if same account)."""
+    for i, existing in enumerate(entries):
+        if isinstance(existing, dict) and existing.get("provider") == "chatgpt" and _same_account(existing, new_entry):
+            entries[i] = new_entry
+            return "updated"
+    entries.append(new_entry)
+    return "added"
+
+
 def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -268,12 +376,17 @@ def main() -> None:
         help="Path to a Codex CLI or OpenCode auth.json. Auto-detected if omitted.",
     )
     parser.add_argument(
+        "--opencode-db", type=str, default=None,
+        help=f"Path to OpenCode's SQLite DB (default: {DEFAULT_OPENCODE_DB}). "
+             "Use this when OpenCode stores auth in opencode.db instead of auth.json.",
+    )
+    parser.add_argument(
         "--output", type=str, default=str(DEFAULT_OUTPUT),
         help=f"Gateway credentials file to write (default: {DEFAULT_OUTPUT}).",
     )
     parser.add_argument(
         "--label", type=str, default=None,
-        help="Optional comment/label stored on the account entry.",
+        help="Optional comment/label stored on the account entry (single-source imports).",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -281,32 +394,45 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Resolve the source file.
-    if args.source:
+    # Determine the new entries from the chosen source.
+    new_entries: List[Dict[str, Any]] = []
+
+    if args.opencode_db:
+        db_path = Path(args.opencode_db).expanduser()
+        print(f"Reading OpenCode database: {db_path}")
+        new_entries = extract_accounts_from_opencode_db(db_path)
+    elif args.source:
         source_path = Path(args.source).expanduser()
+        new_entries = [extract_account(source_path)]
     else:
+        # Auto-detect: JSON sources first, then the OpenCode SQLite DB.
         source_path = next((p for p in DEFAULT_SOURCES if p.exists()), None)
-        if source_path is None:
-            tried = "\n  ".join(str(p) for p in DEFAULT_SOURCES)
+        if source_path is not None:
+            print(f"Auto-detected source: {source_path}")
+            new_entries = [extract_account(source_path)]
+        elif DEFAULT_OPENCODE_DB.exists():
+            print(f"Auto-detected OpenCode database: {DEFAULT_OPENCODE_DB}")
+            new_entries = extract_accounts_from_opencode_db(DEFAULT_OPENCODE_DB)
+        else:
+            tried = "\n  ".join(str(p) for p in DEFAULT_SOURCES + [DEFAULT_OPENCODE_DB])
             sys.exit(
-                "ERROR: no source auth.json found. Log in with Codex CLI or OpenCode "
-                f"first, or pass --source.\nTried:\n  {tried}"
+                "ERROR: no source found. Log in to ChatGPT with Codex CLI or OpenCode "
+                f"first, or pass --source / --opencode-db.\nTried:\n  {tried}"
             )
-        print(f"Auto-detected source: {source_path}")
 
-    entry = extract_account(source_path)
-    if args.label:
-        entry["comment"] = args.label
+    # Apply an optional label only when importing exactly one account.
+    if args.label and len(new_entries) == 1:
+        new_entries[0]["comment"] = args.label
 
-    if not entry.get("accessToken") or not entry.get("refreshToken"):
-        sys.exit("ERROR: source is missing accessToken or refreshToken.")
-
-    # Report (masked).
-    print("Imported account:")
-    print(f"  chatgptAccountId : {entry.get('chatgptAccountId', '<will backfill from JWT at runtime>')}")
-    print(f"  accessToken      : {_mask(entry.get('accessToken'))}")
-    print(f"  refreshToken     : {_mask(entry.get('refreshToken'))}")
-    print(f"  idToken          : {_mask(entry.get('idToken'))}")
+    # Validate + report (masked).
+    for idx, entry in enumerate(new_entries):
+        if not entry.get("accessToken") or not entry.get("refreshToken"):
+            sys.exit(f"ERROR: entry #{idx} is missing accessToken or refreshToken.")
+        print(f"Account #{idx + 1}:")
+        print(f"  chatgptAccountId : {entry.get('chatgptAccountId', '<will backfill from JWT at runtime>')}")
+        print(f"  accessToken      : {_mask(entry.get('accessToken'))}")
+        print(f"  refreshToken     : {_mask(entry.get('refreshToken'))}")
+        print(f"  idToken          : {_mask(entry.get('idToken'))}")
 
     if args.dry_run:
         print("\n--dry-run: nothing written.")
@@ -314,26 +440,17 @@ def main() -> None:
 
     output_path = Path(args.output).expanduser()
     entries = _load_output(output_path)
-
-    # De-dupe by chatgptAccountId (or refreshToken when id is unknown): update in place.
-    def same_account(existing: Dict[str, Any]) -> bool:
-        if entry.get("chatgptAccountId") and existing.get("chatgptAccountId"):
-            return existing["chatgptAccountId"] == entry["chatgptAccountId"]
-        return existing.get("refreshToken") == entry.get("refreshToken")
-
-    replaced = False
-    for i, existing in enumerate(entries):
-        if isinstance(existing, dict) and existing.get("provider") == "chatgpt" and same_account(existing):
-            entries[i] = entry
-            replaced = True
-            break
-    if not replaced:
-        entries.append(entry)
+    added = updated = 0
+    for entry in new_entries:
+        if _merge_entry(entries, entry) == "updated":
+            updated += 1
+        else:
+            added += 1
 
     _write_output(output_path, entries)
-    action = "updated" if replaced else "added"
     codex_count = sum(1 for e in entries if isinstance(e, dict) and e.get("provider") == "chatgpt")
-    print(f"\nOK: {action} account in {output_path} (0600). Total Codex accounts: {codex_count}.")
+    print(f"\nOK: {added} added, {updated} updated in {output_path} (0600). "
+          f"Total Codex accounts: {codex_count}.")
     print("Next: set CHATGPT_ENABLED=true (and CHATGPT_CREDENTIALS_FILE if not the default) in .env.")
 
 

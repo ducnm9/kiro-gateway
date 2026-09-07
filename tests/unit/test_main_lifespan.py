@@ -915,7 +915,11 @@ class TestLifespanChatGPTBackend:
     """Tests for attaching the Codex backend to app.state during lifespan."""
 
     def _mock_manager(self, codex_accounts=0):
-        """Build a mock AccountManager whose _accounts include N codex accounts."""
+        """Build a mock AccountManager whose _accounts include N codex accounts.
+
+        Codex accounts get an awaitable auth_manager so model discovery (if it
+        runs) can call get_access_token without error.
+        """
         manager = AsyncMock()
         accounts = {}
         # One Kiro account so account-system init succeeds.
@@ -925,6 +929,9 @@ class TestLifespanChatGPTBackend:
         for i in range(codex_accounts):
             cx = MagicMock()
             cx.provider = "chatgpt"
+            cx.auth_manager = AsyncMock()
+            cx.auth_manager.get_access_token = AsyncMock(return_value="tok")
+            cx.auth_manager.chatgpt_account_id = f"acc_{i}"
             accounts[f"chatgpt_{i}"] = cx
         manager._accounts = accounts
         manager._current_account_index = 0
@@ -941,6 +948,7 @@ class TestLifespanChatGPTBackend:
         """
         monkeypatch.setattr("main.ACCOUNT_SYSTEM", True)
         monkeypatch.setattr("main.CHATGPT_ENABLED", True)
+        monkeypatch.setattr("main.CHATGPT_MODEL_DISCOVERY", False)  # focus on attachment
         monkeypatch.setattr("main.COMMAND_CODE_ENABLED", False)
         monkeypatch.setattr("main.ACCOUNTS_CONFIG_FILE", str(tmp_path / "credentials.json"))
         monkeypatch.setattr("main.ACCOUNTS_STATE_FILE", str(tmp_path / "state.json"))
@@ -956,6 +964,40 @@ class TestLifespanChatGPTBackend:
                     from kiro.upstream_codex import CodexBackend
                     assert isinstance(app.state.codex_backend, CodexBackend)
                     assert app.state.codex_backend.name == "chatgpt"
+
+    @pytest.mark.asyncio
+    async def test_codex_discovery_updates_routing_ids(self, tmp_path, monkeypatch):
+        """
+        What it does: With discovery on, fetch_models runs and config.CHATGPT_MODEL_IDS
+            is updated to the discovered set.
+        Purpose: New/plan models become routable without a restart.
+        """
+        from kiro import config
+        # Guard the global routing set so this test's mutation auto-restores.
+        monkeypatch.setattr("kiro.config.CHATGPT_MODEL_IDS", set(config.CHATGPT_MODEL_IDS))
+        monkeypatch.setattr("main.ACCOUNT_SYSTEM", True)
+        monkeypatch.setattr("main.CHATGPT_ENABLED", True)
+        monkeypatch.setattr("main.CHATGPT_MODEL_DISCOVERY", True)
+        monkeypatch.setattr("main.CHATGPT_MODEL_REFRESH_INTERVAL", 0)  # no background task
+        monkeypatch.setattr("main.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("main.ACCOUNTS_CONFIG_FILE", str(tmp_path / "credentials.json"))
+        monkeypatch.setattr("main.ACCOUNTS_STATE_FILE", str(tmp_path / "state.json"))
+        (tmp_path / "credentials.json").write_text(json.dumps([{"type": "refresh_token", "refresh_token": "x"}]))
+
+        # Stub fetch_models to populate a known model set.
+        async def fake_fetch(self, auth):
+            self.models = [{"id": "gpt-5.6-luna", "name": "Luna"}, {"id": "gpt-5.6-terra", "name": "Terra"}]
+            return self.models
+        monkeypatch.setattr("kiro.upstream_codex.CodexBackend.fetch_models", fake_fetch)
+
+        manager = self._mock_manager(codex_accounts=1)
+        with patch("main.AccountManager", return_value=manager):
+            with patch("main.httpx.AsyncClient") as mock_client_class:
+                mock_client_class.return_value = AsyncMock()
+                from main import lifespan, app
+                async with lifespan(app):
+                    assert config.CHATGPT_MODEL_IDS == {"gpt-5.6-luna", "gpt-5.6-terra"}
+                    assert set(app.state.codex_backend.model_ids()) == {"gpt-5.6-luna", "gpt-5.6-terra"}
 
     @pytest.mark.asyncio
     async def test_codex_backend_absent_when_disabled(self, tmp_path, monkeypatch):

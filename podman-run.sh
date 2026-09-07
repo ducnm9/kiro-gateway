@@ -41,6 +41,13 @@ if [ -n "$COMMAND_CODE_KEY" ]; then
     COMMAND_CODE_ENABLED=true
 fi
 
+# ChatGPT (Codex) upstream: opt-in via CHATGPT_ENABLED=true in .env.
+# Requires a chatgpt_credentials.json file (JSON list of account tokens),
+# mounted read-write so the gateway can persist refreshed tokens.
+CHATGPT_ENABLED="$(env_value CHATGPT_ENABLED)"
+CHATGPT_CREDS_SRC="$(pwd)/chatgpt_credentials.json"
+CHATGPT_CREDS_DST="/app/chatgpt_credentials.json"
+
 # --- Build image if missing ------------------------------------------------
 
 if ! podman image exists "$IMAGE"; then
@@ -69,6 +76,22 @@ RUN_ARGS=(
 
 if [ "$COMMAND_CODE_ENABLED" = "true" ]; then
     RUN_ARGS+=(-e "COMMAND_CODE_API_KEY=$COMMAND_CODE_KEY")
+fi
+
+# ChatGPT (Codex): mount the credentials file + enable the upstream when requested.
+if [ "$CHATGPT_ENABLED" = "true" ]; then
+    if [ ! -f "$CHATGPT_CREDS_SRC" ]; then
+        echo "ERROR: CHATGPT_ENABLED=true but $CHATGPT_CREDS_SRC not found." >&2
+        echo "       Create it (see chatgpt_credentials.json.example) or run" >&2
+        echo "       scripts/import_codex_auth.py first." >&2
+        exit 1
+    fi
+    RUN_ARGS+=(
+        -e "CHATGPT_ENABLED=true"
+        -e "CHATGPT_CREDENTIALS_FILE=$CHATGPT_CREDS_DST"
+        -v "$CHATGPT_CREDS_SRC:$CHATGPT_CREDS_DST"
+    )
+    echo ">> ChatGPT (Codex): enabled, mounting $CHATGPT_CREDS_SRC"
 fi
 
 # Auth backend: kiro-cli SQLite (default, keeps tokens fresh) or credentials file.

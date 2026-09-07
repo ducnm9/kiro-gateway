@@ -1034,8 +1034,11 @@ class TestChatGPTConfig:
         What it does: Verifies CHATGPT_ENABLED defaults to False.
         Purpose: Ensure the Codex path is opt-in and off by default (backward compat).
         """
-        print("Setup: Removing CHATGPT_ENABLED from environment...")
-        monkeypatch.delenv("CHATGPT_ENABLED", raising=False)
+        # Set to empty rather than delete: load_dotenv(override=False) would
+        # otherwise let a real .env (which may enable it locally) leak in and
+        # break isolation. An empty value is parsed as False, matching intent.
+        print("Setup: Forcing CHATGPT_ENABLED empty (isolated from .env)...")
+        monkeypatch.setenv("CHATGPT_ENABLED", "")
 
         config_module = self._reload()
 
@@ -1231,3 +1234,89 @@ class TestChatGPTConfig:
         url = get_codex_refresh_url()
         print(f"get_codex_refresh_url(): {url}")
         assert url == config_module.CHATGPT_OAUTH_TOKEN_URL
+
+    def test_model_discovery_default_true(self, monkeypatch):
+        """
+        What it does: CHATGPT_MODEL_DISCOVERY defaults to True.
+        Purpose: Discovery is on by default so new models appear automatically.
+        """
+        monkeypatch.delenv("CHATGPT_MODEL_DISCOVERY", raising=False)
+        config_module = self._reload()
+        assert config_module.CHATGPT_MODEL_DISCOVERY is True
+
+    def test_model_discovery_can_disable(self, monkeypatch):
+        """
+        What it does: CHATGPT_MODEL_DISCOVERY=false disables discovery.
+        Purpose: Allow pinning to the static fallback list.
+        """
+        monkeypatch.setenv("CHATGPT_MODEL_DISCOVERY", "false")
+        config_module = self._reload()
+        assert config_module.CHATGPT_MODEL_DISCOVERY is False
+
+    def test_models_url_default(self, monkeypatch):
+        """
+        What it does: CHATGPT_MODELS_URL default points at the Codex models endpoint.
+        Purpose: Correct discovery endpoint.
+        """
+        monkeypatch.delenv("CHATGPT_MODELS_URL", raising=False)
+        config_module = self._reload()
+        assert config_module.CHATGPT_MODELS_URL.endswith("/codex/models")
+
+    def test_client_version_derived_from_user_agent(self, monkeypatch):
+        """
+        What it does: CHATGPT_CLIENT_VERSION defaults to the version in the user-agent.
+        Purpose: Keep the discovery client_version in sync with the UA.
+        """
+        monkeypatch.delenv("CHATGPT_CLIENT_VERSION", raising=False)
+        monkeypatch.setenv("CHATGPT_USER_AGENT", "codex_cli_rs/0.150.1")
+        config_module = self._reload()
+        assert config_module.CHATGPT_CLIENT_VERSION == "0.150.1"
+
+    def test_client_version_explicit_override(self, monkeypatch):
+        """
+        What it does: CHATGPT_CLIENT_VERSION env overrides the derived value.
+        Purpose: Allow pinning the discovery client_version independently.
+        """
+        monkeypatch.setenv("CHATGPT_USER_AGENT", "codex_cli_rs/0.145.0")
+        monkeypatch.setenv("CHATGPT_CLIENT_VERSION", "0.200.0")
+        config_module = self._reload()
+        assert config_module.CHATGPT_CLIENT_VERSION == "0.200.0"
+
+    def test_default_client_version_supports_discovery(self, monkeypatch):
+        """
+        What it does: The default client version is >= 0.145.0.
+        Purpose: Older versions hide newer models; ensure the default sees them.
+        """
+        monkeypatch.delenv("CHATGPT_USER_AGENT", raising=False)
+        monkeypatch.delenv("CHATGPT_CLIENT_VERSION", raising=False)
+        config_module = self._reload()
+        # Compare as version tuples.
+        parts = tuple(int(x) for x in config_module.CHATGPT_CLIENT_VERSION.split("."))
+        assert parts >= (0, 145, 0)
+
+    def test_model_refresh_interval_default(self, monkeypatch):
+        """
+        What it does: CHATGPT_MODEL_REFRESH_INTERVAL defaults to 3600.
+        Purpose: Sensible periodic refresh cadence.
+        """
+        monkeypatch.delenv("CHATGPT_MODEL_REFRESH_INTERVAL", raising=False)
+        config_module = self._reload()
+        assert config_module.CHATGPT_MODEL_REFRESH_INTERVAL == 3600
+
+    def test_model_exclude_contains_internal_slugs(self, monkeypatch):
+        """
+        What it does: CHATGPT_MODEL_EXCLUDE lists internal, non-chat slugs.
+        Purpose: Ensure discovery filters out gpt-reserve / codex-auto-review.
+        """
+        config_module = self._reload()
+        assert "gpt-reserve" in config_module.CHATGPT_MODEL_EXCLUDE
+        assert "codex-auto-review" in config_module.CHATGPT_MODEL_EXCLUDE
+
+    def test_get_codex_models_url(self):
+        """
+        What it does: get_codex_models_url returns the models endpoint.
+        Purpose: Ensure the helper exposes the discovery URL.
+        """
+        config_module = self._reload()
+        from kiro.config import get_codex_models_url
+        assert get_codex_models_url() == config_module.CHATGPT_MODELS_URL

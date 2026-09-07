@@ -29,10 +29,12 @@ per-account ``ChatGPT-Account-ID`` header, so header building takes the
 account's auth manager and metadata rather than a single static key.
 """
 
+import asyncio
 import datetime
 import json
 from typing import Any, Dict, List, Optional
 
+import httpx
 from fastapi import HTTPException
 from loguru import logger
 
@@ -47,8 +49,10 @@ class CodexBackend:
     """Backend for the ChatGPT (Codex) upstream API.
 
     Holds configuration and builds per-account request headers/URLs. The model
-    list is static (from ``config.CHATGPT_MODELS``); Codex has no
-    /ListAvailableModels endpoint.
+    list starts from a static fallback (``config.CHATGPT_MODELS``) and, when
+    discovery is enabled, is replaced at runtime with the account's live model
+    set fetched from the Codex model-list API (``fetch_models``). This lets new
+    models and plan upgrades (Plus/Pro) appear automatically.
     """
 
     name: str = "chatgpt"
@@ -58,10 +62,21 @@ class CodexBackend:
         self.base_url: str = config.CHATGPT_BASE_URL
         self.originator: str = config.CHATGPT_ORIGINATOR
         self.user_agent: str = config.CHATGPT_USER_AGENT
-        # Static model registry surfaced via /v1/models.
-        self.models: List[Dict[str, Any]] = [
+        self.client_version: str = config.CHATGPT_CLIENT_VERSION
+        self.models_url: str = config.CHATGPT_MODELS_URL
+        # Start from the static fallback; discovery may replace this.
+        self.models: List[Dict[str, Any]] = self._static_models()
+
+    @staticmethod
+    def _static_models() -> List[Dict[str, Any]]:
+        """Return the static fallback model list from config."""
+        return [
             {"id": m["id"], "name": m.get("name", m["id"])} for m in config.CHATGPT_MODELS
         ]
+
+    def model_ids(self) -> set:
+        """Return the set of currently-known Codex model ids (for routing)."""
+        return {m["id"] for m in self.models}
 
     def build_url(self) -> str:
         """Return the Codex Responses API endpoint URL.
@@ -102,6 +117,115 @@ class CodexBackend:
         if chatgpt_account_id:
             headers["ChatGPT-Account-ID"] = chatgpt_account_id
         return headers
+
+    def _parse_models_response(self, data: Any) -> List[Dict[str, Any]]:
+        """Parse the Codex model-list response into [{id, name}] entries.
+
+        Keeps only user-facing chat models: ``visibility == "list"`` and slug not
+        in ``config.CHATGPT_MODEL_EXCLUDE`` (internal slugs like ``gpt-reserve``
+        and ``codex-auto-review``).
+
+        Args:
+            data: The decoded JSON body from the model-list endpoint.
+
+        Returns:
+            A list of {"id", "name"} model dicts (possibly empty).
+        """
+        models: List[Dict[str, Any]] = []
+        raw = data.get("models") if isinstance(data, dict) else None
+        if not isinstance(raw, list):
+            return models
+        for m in raw:
+            if not isinstance(m, dict):
+                continue
+            slug = m.get("slug")
+            if not slug or not isinstance(slug, str):
+                continue
+            if slug in config.CHATGPT_MODEL_EXCLUDE:
+                continue
+            # Only surface models the plan lists for interactive use.
+            if m.get("visibility") not in (None, "list"):
+                continue
+            name = m.get("display_name") or slug
+            models.append({"id": slug, "name": name})
+        return models
+
+    async def fetch_models(self, auth_manager) -> List[Dict[str, Any]]:
+        """Fetch the account's available Codex models from the model-list API.
+
+        Authenticates with the given account's token and the ChatGPT-Account-ID
+        header, requests ``?client_version=...`` (>= 0.145.0 to see newer
+        models), parses and filters the response, and updates ``self.models``.
+
+        On any failure the current model list is left unchanged (fail-safe) and
+        the error is logged; the caller keeps whatever list is already set
+        (static fallback or a previous successful fetch).
+
+        Args:
+            auth_manager: A CodexAuthManager for an account (provides token +
+                chatgpt_account_id).
+
+        Returns:
+            The updated list of {"id", "name"} models.
+        """
+        try:
+            token = await auth_manager.get_access_token()
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "User-Agent": self.user_agent,
+                "originator": self.originator,
+            }
+            account_id = getattr(auth_manager, "chatgpt_account_id", None)
+            if account_id:
+                headers["ChatGPT-Account-ID"] = account_id
+            params = {"client_version": self.client_version}
+
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(self.models_url, headers=headers, params=params)
+                if response.status_code != 200:
+                    logger.warning(
+                        f"Codex model discovery failed: HTTP {response.status_code}; "
+                        f"keeping current model list ({len(self.models)})"
+                    )
+                    return self.models
+                data = response.json()
+
+            parsed = self._parse_models_response(data)
+            if parsed:
+                self.models = parsed
+                logger.info(
+                    f"Codex model discovery: {len(parsed)} model(s) "
+                    f"({', '.join(m['id'] for m in parsed)})"
+                )
+            else:
+                logger.warning(
+                    "Codex model discovery returned no usable models; "
+                    f"keeping current list ({len(self.models)})"
+                )
+            return self.models
+        except (httpx.HTTPError, ValueError, KeyError) as e:
+            logger.warning(f"Codex model discovery error ({type(e).__name__}); keeping current list")
+            return self.models
+
+    async def refresh_models_periodically(self, auth_manager, interval: float) -> None:
+        """Periodically refresh the Codex model list until cancelled.
+
+        A transient failure is logged and ignored so the loop keeps retrying on
+        the next interval.
+
+        Args:
+            auth_manager: A CodexAuthManager used to authenticate the fetch.
+            interval: Seconds between refreshes.
+
+        Returns:
+            Never returns; runs until the background task is cancelled.
+        """
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self.fetch_models(auth_manager)
+            except Exception as e:  # noqa: BLE001 - loop must survive any error
+                logger.warning(f"Codex periodic model refresh failed: {type(e).__name__}")
 
 
 def extract_codex_error_message(body: str) -> str:

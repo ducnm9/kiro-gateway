@@ -114,6 +114,21 @@ class TestResolveUpstreamChatGPT:
 
         assert resolve_upstream("deepseek/deepseek-v4-pro") == "command_code"
 
+    def test_dynamic_model_ids_are_honored(self, monkeypatch):
+        """
+        What it does: Routing reflects a runtime update of CHATGPT_MODEL_IDS.
+        Purpose: Discovery updates config.CHATGPT_MODEL_IDS at runtime; resolve_upstream
+            reads it live, so newly-discovered models route to Codex without a restart.
+        """
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", True)
+        # Simulate discovery replacing the static set with the live plan's models.
+        monkeypatch.setattr("kiro.config.CHATGPT_MODEL_IDS", {"gpt-5.6-luna", "gpt-5.6-terra"})
+
+        assert resolve_upstream("gpt-5.6-luna") == "chatgpt"
+        assert resolve_upstream("gpt-5.6-terra") == "chatgpt"
+        # A model no longer in the discovered set falls through to Kiro.
+        assert resolve_upstream("gpt-5.5") == "kiro"
+
 
 class TestResolveUpstreamKiroDisabled:
     """Tests for KIRO_ENABLED gating in resolve_upstream."""

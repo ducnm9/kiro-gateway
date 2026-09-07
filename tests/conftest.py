@@ -400,6 +400,31 @@ def mock_httpx_response():
 
 
 # =============================================================================
+# Codex/ChatGPT test isolation
+# =============================================================================
+
+@pytest.fixture(autouse=True)
+def _isolate_codex_config(monkeypatch):
+    """Disable ChatGPT (Codex) by default in every test.
+
+    A developer's real .env may set CHATGPT_ENABLED=true (and a real
+    chatgpt_credentials.json may exist). Without this, load_credentials() would
+    load real Codex accounts and /v1/models would surface Codex models, making
+    unrelated tests non-deterministic. Tests that specifically exercise Codex
+    re-enable it via their own monkeypatch, which overrides these defaults.
+    """
+    monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", False, raising=False)
+    monkeypatch.setattr("kiro.config.CHATGPT_MODEL_DISCOVERY", False, raising=False)
+    # Point the credentials file at a nonexistent path so no real tokens load.
+    monkeypatch.setattr(
+        "kiro.config.CHATGPT_CREDENTIALS_FILE",
+        "/nonexistent/chatgpt_credentials.json",
+        raising=False,
+    )
+    yield
+
+
+# =============================================================================
 # Global Network Blocking
 # =============================================================================
 
@@ -511,6 +536,7 @@ def block_all_network_calls():
         patch('kiro.account_manager.httpx.AsyncClient', return_value=mock_async_client),
         patch('kiro.auth_codex.httpx.AsyncClient', return_value=mock_async_client),
         patch('kiro.http_client_codex.httpx.AsyncClient', return_value=mock_async_client),
+        patch('kiro.upstream_codex.httpx.AsyncClient', return_value=mock_async_client),
     ]
     
     # Start patchers

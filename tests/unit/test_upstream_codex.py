@@ -92,7 +92,8 @@ class TestCodexBackendHeaders:
         backend = CodexBackend()
         assert len(backend.models) > 0
         ids = {m["id"] for m in backend.models}
-        assert "gpt-5.5" in ids
+        # Static fallback contains the models verified on a ChatGPT Go account.
+        assert "gpt-5.6-luna" in ids
         for m in backend.models:
             assert m["id"] and m["name"]
 
@@ -392,3 +393,150 @@ class TestCodexHttpClient:
 
         await client.request_with_retry({"model": "gpt-5.5"})
         assert captured.get("ChatGPT-Account-ID") == "acc_bind"
+
+
+# =============================================================================
+# CodexBackend dynamic model discovery
+# =============================================================================
+
+class TestCodexModelDiscovery:
+    """Tests for fetch_models / _parse_models_response / refresh loop."""
+
+    def _models_response(self):
+        """A realistic Codex /codex/models response with mixed visibility."""
+        return {
+            "models": [
+                {"slug": "gpt-reserve", "visibility": "hide", "display_name": "Reserve"},
+                {"slug": "gpt-5.6-terra", "visibility": "list", "display_name": "GPT-5.6 Terra"},
+                {"slug": "gpt-5.6-luna", "visibility": "list", "display_name": "GPT-5.6 Luna"},
+                {"slug": "gpt-5.5", "visibility": "list", "display_name": "GPT-5.5"},
+                {"slug": "gpt-5.4-mini", "visibility": "list", "display_name": "GPT-5.4 Mini"},
+                {"slug": "codex-auto-review", "visibility": "hide", "display_name": "Auto Review"},
+            ]
+        }
+
+    def test_parse_filters_internal_and_hidden(self):
+        """
+        What it does: _parse_models_response keeps only visibility=list, non-internal slugs.
+        Purpose: Exclude gpt-reserve / codex-auto-review and hidden entries.
+        """
+        backend = CodexBackend()
+        parsed = backend._parse_models_response(self._models_response())
+        ids = {m["id"] for m in parsed}
+        assert ids == {"gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini"}
+        # display_name is carried through as name.
+        luna = next(m for m in parsed if m["id"] == "gpt-5.6-luna")
+        assert luna["name"] == "GPT-5.6 Luna"
+
+    def test_parse_empty_or_malformed(self):
+        """
+        What it does: Malformed/empty responses parse to an empty list.
+        Purpose: Robustness against unexpected shapes.
+        """
+        backend = CodexBackend()
+        assert backend._parse_models_response({}) == []
+        assert backend._parse_models_response({"models": "nope"}) == []
+        assert backend._parse_models_response({"models": [{"no_slug": 1}]}) == []
+
+    def test_model_ids_reflects_current_models(self):
+        """
+        What it does: model_ids() returns the set of current model ids.
+        Purpose: Routing reads this dynamic set.
+        """
+        backend = CodexBackend()
+        backend.models = [{"id": "a", "name": "A"}, {"id": "b", "name": "B"}]
+        assert backend.model_ids() == {"a", "b"}
+
+    def _auth(self, token="tok", account_id="acc_1"):
+        auth = AsyncMock()
+        auth.get_access_token = AsyncMock(return_value=token)
+        auth.chatgpt_account_id = account_id
+        return auth
+
+    def _patch_get(self, status_code, json_body):
+        resp = AsyncMock()
+        resp.status_code = status_code
+        resp.json = Mock(return_value=json_body)
+        client = AsyncMock()
+        client.get = AsyncMock(return_value=resp)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        return patch("kiro.upstream_codex.httpx.AsyncClient", return_value=client), client
+
+    @pytest.mark.asyncio
+    async def test_fetch_models_success_updates_list(self):
+        """
+        What it does: A 200 response updates self.models to the filtered set.
+        Purpose: Core discovery behavior.
+        """
+        backend = CodexBackend()
+        patcher, client = self._patch_get(200, self._models_response())
+        with patcher:
+            result = await backend.fetch_models(self._auth())
+        ids = {m["id"] for m in result}
+        assert ids == {"gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini"}
+        assert backend.model_ids() == ids
+        # client_version query param is sent.
+        _, kwargs = client.get.call_args
+        assert kwargs["params"]["client_version"] == backend.client_version
+        assert kwargs["headers"]["ChatGPT-Account-ID"] == "acc_1"
+
+    @pytest.mark.asyncio
+    async def test_fetch_models_http_error_keeps_current(self):
+        """
+        What it does: A non-200 response leaves self.models unchanged (fail-safe).
+        Purpose: Discovery failure must not wipe the usable list.
+        """
+        backend = CodexBackend()
+        before = list(backend.models)
+        patcher, _ = self._patch_get(403, {})
+        with patcher:
+            result = await backend.fetch_models(self._auth())
+        assert result == before
+
+    @pytest.mark.asyncio
+    async def test_fetch_models_empty_keeps_current(self):
+        """
+        What it does: A 200 with no usable models keeps the current list.
+        Purpose: Never replace a good list with an empty one.
+        """
+        backend = CodexBackend()
+        before = list(backend.models)
+        patcher, _ = self._patch_get(200, {"models": [{"slug": "gpt-reserve", "visibility": "hide"}]})
+        with patcher:
+            result = await backend.fetch_models(self._auth())
+        assert result == before
+
+    @pytest.mark.asyncio
+    async def test_fetch_models_network_error_keeps_current(self):
+        """
+        What it does: A network error is caught; self.models unchanged.
+        Purpose: Fail-safe on transport failure.
+        """
+        backend = CodexBackend()
+        before = list(backend.models)
+        client = AsyncMock()
+        client.get = AsyncMock(side_effect=httpx.ConnectError("no route"))
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        with patch("kiro.upstream_codex.httpx.AsyncClient", return_value=client):
+            result = await backend.fetch_models(self._auth())
+        assert result == before
+
+    @pytest.mark.asyncio
+    async def test_refresh_loop_calls_fetch(self):
+        """
+        What it does: refresh_models_periodically calls fetch_models each cycle.
+        Purpose: Periodic refresh keeps the list current.
+        """
+        import asyncio
+        backend = CodexBackend()
+        backend.fetch_models = AsyncMock(return_value=[])
+        task = asyncio.create_task(backend.refresh_models_periodically(self._auth(), 0.01))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        assert backend.fetch_models.await_count >= 1

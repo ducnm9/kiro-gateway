@@ -672,24 +672,67 @@ CHATGPT_STRATEGY: str = os.getenv("CHATGPT_STRATEGY", "fill-first").strip().lowe
 CHATGPT_STICKY_LIMIT: int = int(os.getenv("CHATGPT_STICKY_LIMIT", "3"))
 
 # Client identity headers sent to the Codex backend (match the official Codex CLI).
+# The client version must be >= 0.145.0 for model discovery to return the full
+# model set (older versions hide newer models like the 5.6 family).
 CHATGPT_ORIGINATOR: str = os.getenv("CHATGPT_ORIGINATOR", "codex_cli_rs")
-CHATGPT_USER_AGENT: str = os.getenv("CHATGPT_USER_AGENT", "codex_cli_rs/0.136.0")
+CHATGPT_USER_AGENT: str = os.getenv("CHATGPT_USER_AGENT", "codex_cli_rs/0.145.0")
+
+# Client version reported to the Codex model-discovery endpoint. Defaults to the
+# version parsed from CHATGPT_USER_AGENT (the "x.y.z" after the last "/").
+def _parse_client_version(user_agent: str) -> str:
+    """Extract the x.y.z version from a Codex user-agent string."""
+    tail = user_agent.rsplit("/", 1)[-1].strip()
+    return tail or "0.145.0"
+
+CHATGPT_CLIENT_VERSION: str = os.getenv(
+    "CHATGPT_CLIENT_VERSION", _parse_client_version(CHATGPT_USER_AGENT)
+)
 
 # Lead time (seconds) before access-token expiry when a refresh is triggered.
 CHATGPT_TOKEN_REFRESH_THRESHOLD: int = int(os.getenv("CHATGPT_TOKEN_REFRESH_THRESHOLD", "600"))
 
-# Static registry of Codex models exposed via /v1/models and used for routing.
-# Codex model IDs are bare names (no "/"), which is how resolve_upstream tells them
-# apart from Command Code (provider-qualified) and Kiro (also bare, but not in this set).
+# ---- Dynamic model discovery ----
+# Codex exposes an authenticated model-list endpoint. When discovery is enabled
+# (default), the gateway fetches the account's available models at startup and
+# periodically, so new models (and plan upgrades to Plus/Pro) appear
+# automatically. When disabled or on failure, it falls back to CHATGPT_MODELS.
+
+# Enable fetching the Codex model list from the API (default: true).
+CHATGPT_MODEL_DISCOVERY: bool = os.getenv(
+    "CHATGPT_MODEL_DISCOVERY", "true"
+).lower() in ("true", "1", "yes")
+
+# Codex model-list endpoint (requires ?client_version=... and OAuth).
+CHATGPT_MODELS_URL: str = os.getenv(
+    "CHATGPT_MODELS_URL", "https://chatgpt.com/backend-api/codex/models"
+)
+
+# Interval (seconds) between automatic Codex model-list refreshes.
+# Default: 3600 (1 hour). Set to 0 to disable periodic refresh (still fetched once at startup).
+CHATGPT_MODEL_REFRESH_INTERVAL: int = int(os.getenv("CHATGPT_MODEL_REFRESH_INTERVAL", "3600"))
+
+# Codex model slugs that are internal/non-chat and must be filtered out of the
+# discovered list (they are not user-callable chat models).
+CHATGPT_MODEL_EXCLUDE: set = {"gpt-reserve", "codex-auto-review"}
+
+# Fallback static registry of Codex models, used only when dynamic discovery is
+# disabled or fails. When CHATGPT_MODEL_DISCOVERY is on (default), the live model
+# set comes from the Codex model-list API instead.
+# Codex model IDs are bare names (no "/"), which is how resolve_upstream tells
+# them apart from Command Code (provider-qualified) and Kiro.
 # Each entry: {"id": <client model id>, "name": <display name>}.
+#
+# NOTE: these IDs were verified to work on a ChatGPT "Go" account; higher plans
+# (Plus/Pro) unlock additional models, which discovery will surface automatically.
 CHATGPT_MODELS: List[Dict[str, str]] = [
-    {"id": "gpt-5.5", "name": "GPT 5.5"},
-    {"id": "gpt-5.4", "name": "GPT 5.4"},
+    {"id": "gpt-5.6-luna", "name": "GPT 5.6 Luna"},
+    {"id": "gpt-5.6-terra", "name": "GPT 5.6 Terra"},
     {"id": "gpt-5.4-mini", "name": "GPT 5.4 Mini"},
-    {"id": "gpt-5.3-codex-spark", "name": "GPT 5.3 Codex Spark"},
 ]
 
 # Set of Codex model IDs (derived from CHATGPT_MODELS) for O(1) routing lookup.
+# This is the FALLBACK set; when discovery runs, main.py replaces it at runtime
+# with the discovered ids so resolve_upstream routes newly-available models too.
 CHATGPT_MODEL_IDS: set = {m["id"] for m in CHATGPT_MODELS}
 
 # ==================================================================================================
@@ -738,3 +781,12 @@ def get_codex_refresh_url() -> str:
         The configured Codex OAuth token URL (``CHATGPT_OAUTH_TOKEN_URL``).
     """
     return CHATGPT_OAUTH_TOKEN_URL
+
+
+def get_codex_models_url() -> str:
+    """Return the Codex model-list endpoint (without query params).
+
+    Returns:
+        The configured Codex models URL (``CHATGPT_MODELS_URL``).
+    """
+    return CHATGPT_MODELS_URL

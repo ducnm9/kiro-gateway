@@ -82,9 +82,12 @@ from kiro.config import (
     COMMAND_CODE_ENABLED,
     COMMAND_CODE_API_KEY,
     CHATGPT_ENABLED,
+    CHATGPT_MODEL_DISCOVERY,
+    CHATGPT_MODEL_REFRESH_INTERVAL,
     COMMAND_CODE_MODEL_REFRESH_INTERVAL,
     _warn_timeout_configuration,
 )
+from kiro import config
 from kiro.upstream_cc import CommandCodeBackend
 from kiro.upstream_codex import CodexBackend
 from kiro.auth import KiroAuthManager
@@ -611,22 +614,54 @@ async def lifespan(app: FastAPI):
     # _load_codex_credentials) from CHATGPT_CREDENTIALS_FILE. Here we only attach
     # the backend (URL + header builder + static model registry) used by the
     # route handlers. The static model list needs no periodic refresh.
+    codex_refresh_task = None
     if CHATGPT_ENABLED:
         codex_backend = CodexBackend()
         app.state.codex_backend = codex_backend
-        codex_account_count = sum(
-            1 for acc in app.state.account_manager._accounts.values()
+
+        # Find a Codex account to authenticate model discovery.
+        codex_account_ids = [
+            aid for aid, acc in app.state.account_manager._accounts.items()
             if acc.provider == "chatgpt"
-        )
+        ]
         logger.info(
-            f"ChatGPT (Codex) backend initialized with {len(codex_backend.models)} models "
-            f"and {codex_account_count} account(s)"
+            f"ChatGPT (Codex) backend initialized with {len(codex_backend.models)} "
+            f"fallback models and {len(codex_account_ids)} account(s)"
         )
-        if codex_account_count == 0:
+        if not codex_account_ids:
             logger.warning(
                 "CHATGPT_ENABLED is true but no Codex accounts were loaded; "
                 "check CHATGPT_CREDENTIALS_FILE"
             )
+        elif CHATGPT_MODEL_DISCOVERY:
+            # Initialize the first Codex account, then discover its live model set.
+            first_id = codex_account_ids[0]
+            if await app.state.account_manager._initialize_account(first_id):
+                auth = app.state.account_manager._accounts[first_id].auth_manager
+                await codex_backend.fetch_models(auth)
+                # Publish the discovered ids so resolve_upstream routes them.
+                config.CHATGPT_MODEL_IDS = codex_backend.model_ids()
+                logger.info(
+                    f"ChatGPT (Codex) routing models: {sorted(config.CHATGPT_MODEL_IDS)}"
+                )
+                # Periodic refresh so new models / plan upgrades appear automatically.
+                if CHATGPT_MODEL_REFRESH_INTERVAL > 0:
+                    async def _codex_refresh_loop():
+                        while True:
+                            await asyncio.sleep(CHATGPT_MODEL_REFRESH_INTERVAL)
+                            try:
+                                await codex_backend.fetch_models(auth)
+                                config.CHATGPT_MODEL_IDS = codex_backend.model_ids()
+                            except Exception as e:  # noqa: BLE001
+                                logger.warning(f"Codex model refresh failed: {type(e).__name__}")
+                    codex_refresh_task = asyncio.create_task(_codex_refresh_loop())
+                    logger.info(
+                        f"ChatGPT (Codex) model refresh scheduled every "
+                        f"{CHATGPT_MODEL_REFRESH_INTERVAL}s"
+                    )
+            else:
+                logger.warning("Failed to initialize a Codex account for model discovery; "
+                               "using static fallback model list")
 
     yield
     
@@ -645,6 +680,14 @@ async def lifespan(app: FastAPI):
         cc_refresh_task.cancel()
         try:
             await cc_refresh_task
+        except asyncio.CancelledError:
+            pass
+
+    # Cancel ChatGPT (Codex) model refresh task
+    if codex_refresh_task:
+        codex_refresh_task.cancel()
+        try:
+            await codex_refresh_task
         except asyncio.CancelledError:
             pass
     

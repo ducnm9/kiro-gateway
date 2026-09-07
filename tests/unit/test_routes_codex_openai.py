@@ -314,7 +314,7 @@ class TestModelsMergeCodex:
         data = r.json()["data"]
         codex_models = [m for m in data if m["owned_by"] == "openai"]
         assert codex_models
-        assert any(m["id"] == "gpt-5.5" for m in codex_models)
+        assert any(m["id"] == "gpt-5.6-luna" for m in codex_models)
 
     def test_models_absent_when_no_codex_backend(self, test_client, valid_proxy_api_key):
         """
@@ -409,7 +409,7 @@ class TestKiroDisabledOpenAI:
             # No Kiro-derived entries (owned_by="anthropic" / "Claude model via Kiro API")
             assert all(m["owned_by"] != "anthropic" for m in data)
             # Codex models still present
-            assert any(m["id"] == "gpt-5.5" for m in data)
+            assert any(m["id"] == "gpt-5.6-luna" for m in data)
         finally:
             # Restore shared app.state to avoid leaking into other tests.
             test_client.app.state.codex_backend = prev_backend

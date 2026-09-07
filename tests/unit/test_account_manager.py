@@ -1756,8 +1756,8 @@ class TestCodexAccountInitialization:
         assert acc.auth_manager is not None
         assert acc.auth_manager.provider == "chatgpt"
         assert acc.model_resolver is not None
-        # Static Codex models registered.
-        assert "gpt-5.5" in acc.model_resolver.get_available_models()
+        # Static Codex fallback models registered.
+        assert "gpt-5.6-luna" in acc.model_resolver.get_available_models()
 
     @pytest.mark.asyncio
     async def test_initialize_codex_account_auth_failure(self, tmp_path, monkeypatch):
