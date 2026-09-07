@@ -132,3 +132,74 @@ def classify_error(status_code: int, reason: Optional[str]) -> ErrorType:
     
     # Default: treat unknown errors as FATAL to avoid wasting retries
     return ErrorType.FATAL
+
+
+# Codex (ChatGPT) error reasons/messages that indicate a transient, account-level
+# condition and should trigger failover to another account rather than a hard fail.
+_CODEX_RECOVERABLE_SUBSTRINGS = (
+    "usage_limit_reached",
+    "model_at_capacity",
+    "selected model is at capacity",
+    "server_is_overloaded",
+    "service_unavailable_error",
+    "rate_limit",
+)
+
+
+def classify_error_codex(status_code: int, reason: Optional[str]) -> ErrorType:
+    """
+    Classify a ChatGPT (Codex) upstream error for failover decision.
+
+    Codex differs from Kiro in two important ways:
+    - Transient server errors (5xx) and capacity/overload conditions are
+      RECOVERABLE for Codex (multiple accounts can absorb the load), whereas
+      the Kiro classifier treats 5xx as FATAL.
+    - Quota exhaustion surfaces as 429 ``usage_limit_reached`` and capacity as
+      ``model_at_capacity`` — both RECOVERABLE so failover kicks in.
+
+    RECOVERABLE (try next account):
+    - 429 (rate/usage limit), 401/403 (after refresh failed), 5xx.
+    - Any error whose reason/message matches a Codex transient substring
+      (usage_limit_reached, model_at_capacity, server_is_overloaded, ...).
+
+    FATAL (return to client immediately):
+    - 400 / 422 (malformed or invalid request — will fail on every account).
+
+    Args:
+        status_code: HTTP status code from the Codex upstream.
+        reason: Error reason/message text (may be None).
+
+    Returns:
+        ErrorType.RECOVERABLE to try the next account, else ErrorType.FATAL.
+
+    Examples:
+        >>> classify_error_codex(429, "usage_limit_reached")
+        <ErrorType.RECOVERABLE: 'recoverable'>
+        >>> classify_error_codex(200, "Selected model is at capacity")
+        <ErrorType.RECOVERABLE: 'recoverable'>
+        >>> classify_error_codex(400, "invalid_request")
+        <ErrorType.FATAL: 'fatal'>
+        >>> classify_error_codex(503, None)
+        <ErrorType.RECOVERABLE: 'recoverable'>
+    """
+    lowered = (reason or "").lower()
+
+    # Transient text signals take priority (may accompany any status, including
+    # a 200-OK body carrying a capacity error).
+    if any(sub in lowered for sub in _CODEX_RECOVERABLE_SUBSTRINGS):
+        return ErrorType.RECOVERABLE
+
+    # Malformed/invalid request — fails on every account.
+    if status_code in (400, 422):
+        return ErrorType.FATAL
+
+    # Auth rejection (after a refresh attempt), rate limit, and transient server
+    # errors are all account-level → try the next account.
+    if status_code in (401, 403, 429):
+        return ErrorType.RECOVERABLE
+    if 500 <= status_code < 600:
+        return ErrorType.RECOVERABLE
+
+    # Default: treat unknown Codex errors as RECOVERABLE so a second account
+    # gets a chance rather than failing the whole request.
+    return ErrorType.RECOVERABLE

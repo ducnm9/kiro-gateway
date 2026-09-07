@@ -312,3 +312,104 @@ class TestClassifyErrorComprehensive:
             result = classify_error(400, reason)
             print(f"400 + reason={reason}: {result}")
             assert result == ErrorType.FATAL, f"400 + {reason} should be FATAL"
+
+
+# =============================================================================
+# Codex (ChatGPT) error classification
+# =============================================================================
+
+from kiro.account_errors import classify_error_codex
+
+
+class TestClassifyErrorCodexRecoverable:
+    """Codex errors that should trigger account failover (RECOVERABLE)."""
+
+    def test_429_usage_limit_reached(self):
+        """
+        What it does: 429 usage_limit_reached is RECOVERABLE.
+        Purpose: Quota exhaustion should fail over to another account.
+        """
+        assert classify_error_codex(429, "usage_limit_reached") == ErrorType.RECOVERABLE
+
+    def test_model_at_capacity_any_status(self):
+        """
+        What it does: model_at_capacity is RECOVERABLE even in a 200-OK body.
+        Purpose: Capacity errors trigger failover regardless of status.
+        """
+        assert classify_error_codex(200, "Selected model is at capacity.") == ErrorType.RECOVERABLE
+        assert classify_error_codex(200, "model_at_capacity") == ErrorType.RECOVERABLE
+
+    def test_server_overloaded_recoverable(self):
+        """
+        What it does: server_is_overloaded / service_unavailable_error are RECOVERABLE.
+        Purpose: Transient overloads should fail over.
+        """
+        assert classify_error_codex(200, "server_is_overloaded") == ErrorType.RECOVERABLE
+        assert classify_error_codex(503, "service_unavailable_error") == ErrorType.RECOVERABLE
+
+    def test_401_403_recoverable(self):
+        """
+        What it does: 401/403 (after refresh failure) are RECOVERABLE.
+        Purpose: A dead account should yield to the next one.
+        """
+        assert classify_error_codex(401, None) == ErrorType.RECOVERABLE
+        assert classify_error_codex(403, None) == ErrorType.RECOVERABLE
+
+    def test_5xx_recoverable_for_codex(self):
+        """
+        What it does: 5xx is RECOVERABLE for Codex (unlike Kiro).
+        Purpose: Multiple accounts can absorb transient upstream errors.
+        """
+        for status in (500, 502, 503, 529):
+            assert classify_error_codex(status, None) == ErrorType.RECOVERABLE
+
+    def test_unknown_defaults_recoverable(self):
+        """
+        What it does: Unknown Codex errors default to RECOVERABLE.
+        Purpose: Give a second account a chance rather than hard-failing.
+        """
+        assert classify_error_codex(418, "teapot") == ErrorType.RECOVERABLE
+
+
+class TestClassifyErrorCodexFatal:
+    """Codex errors that should be returned to the client (FATAL)."""
+
+    def test_400_fatal(self):
+        """
+        What it does: 400 malformed request is FATAL.
+        Purpose: A bad request fails on every account.
+        """
+        assert classify_error_codex(400, "invalid_request") == ErrorType.FATAL
+
+    def test_422_fatal(self):
+        """
+        What it does: 422 validation error is FATAL.
+        Purpose: Invalid payloads should not trigger failover.
+        """
+        assert classify_error_codex(422, None) == ErrorType.FATAL
+
+    def test_400_with_transient_substring_still_recoverable(self):
+        """
+        What it does: A 400 whose message contains a transient substring is RECOVERABLE.
+        Purpose: Text signals take priority over the status code.
+        """
+        # Edge case: capacity text wins even on a 400 status.
+        assert classify_error_codex(400, "model_at_capacity") == ErrorType.RECOVERABLE
+
+
+class TestClassifyErrorKiroUnaffected:
+    """Ensure the Kiro classifier is unchanged by the Codex addition."""
+
+    def test_kiro_5xx_still_fatal(self):
+        """
+        What it does: Kiro's classify_error still treats 5xx as FATAL.
+        Purpose: No regression to Kiro classification.
+        """
+        assert classify_error(503, None) == ErrorType.FATAL
+
+    def test_kiro_429_still_recoverable(self):
+        """
+        What it does: Kiro's classify_error still treats 429 as RECOVERABLE.
+        Purpose: No regression.
+        """
+        assert classify_error(429, None) == ErrorType.RECOVERABLE

@@ -80,10 +80,12 @@ from kiro.config import (
     ACCOUNTS_STATE_FILE,
     COMMAND_CODE_ENABLED,
     COMMAND_CODE_API_KEY,
+    CHATGPT_ENABLED,
     COMMAND_CODE_MODEL_REFRESH_INTERVAL,
     _warn_timeout_configuration,
 )
 from kiro.upstream_cc import CommandCodeBackend
+from kiro.upstream_codex import CodexBackend
 from kiro.auth import KiroAuthManager
 from kiro.cache import ModelInfoCache
 from kiro.model_resolver import ModelResolver
@@ -559,7 +561,31 @@ async def lifespan(app: FastAPI):
             )
     elif COMMAND_CODE_ENABLED:
         logger.warning("COMMAND_CODE_ENABLED is true but COMMAND_CODE_API_KEY is empty; Command Code disabled")
-    
+
+    # ==============================================================================
+    # Initialize ChatGPT (Codex) backend (optional third upstream)
+    # ==============================================================================
+    # Codex accounts are loaded by the Account System (load_credentials →
+    # _load_codex_credentials) from CHATGPT_CREDENTIALS_FILE. Here we only attach
+    # the backend (URL + header builder + static model registry) used by the
+    # route handlers. The static model list needs no periodic refresh.
+    if CHATGPT_ENABLED:
+        codex_backend = CodexBackend()
+        app.state.codex_backend = codex_backend
+        codex_account_count = sum(
+            1 for acc in app.state.account_manager._accounts.values()
+            if acc.provider == "chatgpt"
+        )
+        logger.info(
+            f"ChatGPT (Codex) backend initialized with {len(codex_backend.models)} models "
+            f"and {codex_account_count} account(s)"
+        )
+        if codex_account_count == 0:
+            logger.warning(
+                "CHATGPT_ENABLED is true but no Codex accounts were loaded; "
+                "check CHATGPT_CREDENTIALS_FILE"
+            )
+
     yield
     
     # Graceful shutdown

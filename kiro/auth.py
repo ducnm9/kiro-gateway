@@ -115,7 +115,11 @@ class KiroAuthManager:
         ... )
         >>> token = await auth_manager.get_access_token()
     """
-    
+
+    # Provider identifier — satisfies the UpstreamAuthManager protocol so this
+    # manager can be driven by the Account System alongside other providers.
+    provider: str = "kiro"
+
     def __init__(
         self,
         refresh_token: Optional[str] = None,

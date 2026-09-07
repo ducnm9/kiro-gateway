@@ -905,3 +905,99 @@ class TestLifespanAccountManagerInit:
         print(f"Save calls: {len(save_calls)}")
         assert len(save_calls) >= 2
         print("✓ Final state save was performed on shutdown")
+
+
+# =============================================================================
+# Test Class: ChatGPT (Codex) backend wiring in lifespan
+# =============================================================================
+
+class TestLifespanChatGPTBackend:
+    """Tests for attaching the Codex backend to app.state during lifespan."""
+
+    def _mock_manager(self, codex_accounts=0):
+        """Build a mock AccountManager whose _accounts include N codex accounts."""
+        manager = AsyncMock()
+        accounts = {}
+        # One Kiro account so account-system init succeeds.
+        kiro_acc = MagicMock()
+        kiro_acc.provider = "kiro"
+        accounts["kiro_1"] = kiro_acc
+        for i in range(codex_accounts):
+            cx = MagicMock()
+            cx.provider = "chatgpt"
+            accounts[f"chatgpt_{i}"] = cx
+        manager._accounts = accounts
+        manager._current_account_index = 0
+        manager._initialize_account = AsyncMock(return_value=True)
+        manager._save_state = AsyncMock()
+        manager.save_state_periodically = AsyncMock()
+        return manager
+
+    @pytest.mark.asyncio
+    async def test_codex_backend_attached_when_enabled(self, tmp_path, monkeypatch):
+        """
+        What it does: With CHATGPT_ENABLED, app.state.codex_backend is a CodexBackend.
+        Purpose: Verify the Codex backend is wired for the route handlers.
+        """
+        monkeypatch.setattr("main.ACCOUNT_SYSTEM", True)
+        monkeypatch.setattr("main.CHATGPT_ENABLED", True)
+        monkeypatch.setattr("main.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("main.ACCOUNTS_CONFIG_FILE", str(tmp_path / "credentials.json"))
+        monkeypatch.setattr("main.ACCOUNTS_STATE_FILE", str(tmp_path / "state.json"))
+        # Pre-create a credentials.json so migration is skipped.
+        (tmp_path / "credentials.json").write_text(json.dumps([{"type": "refresh_token", "refresh_token": "x"}]))
+
+        manager = self._mock_manager(codex_accounts=2)
+        with patch("main.AccountManager", return_value=manager):
+            with patch("main.httpx.AsyncClient") as mock_client_class:
+                mock_client_class.return_value = AsyncMock()
+                from main import lifespan, app
+                async with lifespan(app):
+                    from kiro.upstream_codex import CodexBackend
+                    assert isinstance(app.state.codex_backend, CodexBackend)
+                    assert app.state.codex_backend.name == "chatgpt"
+
+    @pytest.mark.asyncio
+    async def test_codex_backend_absent_when_disabled(self, tmp_path, monkeypatch):
+        """
+        What it does: With CHATGPT_ENABLED false, no codex_backend is attached.
+        Purpose: Opt-in; disabled leaves state clean.
+        """
+        monkeypatch.setattr("main.ACCOUNT_SYSTEM", True)
+        monkeypatch.setattr("main.CHATGPT_ENABLED", False)
+        monkeypatch.setattr("main.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("main.ACCOUNTS_CONFIG_FILE", str(tmp_path / "credentials.json"))
+        monkeypatch.setattr("main.ACCOUNTS_STATE_FILE", str(tmp_path / "state.json"))
+        (tmp_path / "credentials.json").write_text(json.dumps([{"type": "refresh_token", "refresh_token": "x"}]))
+
+        manager = self._mock_manager(codex_accounts=0)
+        with patch("main.AccountManager", return_value=manager):
+            with patch("main.httpx.AsyncClient") as mock_client_class:
+                mock_client_class.return_value = AsyncMock()
+                from main import lifespan, app
+                # Ensure a clean slate for this assertion.
+                if hasattr(app.state, "codex_backend"):
+                    delattr(app.state, "codex_backend")
+                async with lifespan(app):
+                    assert getattr(app.state, "codex_backend", None) is None
+
+    @pytest.mark.asyncio
+    async def test_codex_enabled_but_no_accounts_still_attaches_backend(self, tmp_path, monkeypatch):
+        """
+        What it does: Enabled with zero Codex accounts still attaches the backend.
+        Purpose: The backend exposes models; missing accounts is a warning, not a crash.
+        """
+        monkeypatch.setattr("main.ACCOUNT_SYSTEM", True)
+        monkeypatch.setattr("main.CHATGPT_ENABLED", True)
+        monkeypatch.setattr("main.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("main.ACCOUNTS_CONFIG_FILE", str(tmp_path / "credentials.json"))
+        monkeypatch.setattr("main.ACCOUNTS_STATE_FILE", str(tmp_path / "state.json"))
+        (tmp_path / "credentials.json").write_text(json.dumps([{"type": "refresh_token", "refresh_token": "x"}]))
+
+        manager = self._mock_manager(codex_accounts=0)
+        with patch("main.AccountManager", return_value=manager):
+            with patch("main.httpx.AsyncClient") as mock_client_class:
+                mock_client_class.return_value = AsyncMock()
+                from main import lifespan, app
+                async with lifespan(app):
+                    assert app.state.codex_backend is not None

@@ -62,6 +62,13 @@ from kiro.converters_cc import build_cc_payload
 from kiro.streaming_cc import collect_cc_response, stream_cc_to_openai
 from kiro.upstream_cc import raise_cc_http_error
 from kiro.network_errors import classify_network_error
+from kiro.converters_codex import build_codex_payload, inline_remote_images
+from kiro.streaming_codex import (
+    collect_codex_response,
+    stream_codex_to_openai,
+    CodexSSEAccountFallbackError,
+)
+from kiro.http_client_codex import CodexHttpClient
 
 # Import debug_logger
 try:
@@ -180,6 +187,21 @@ async def get_models(request: Request):
                 )
             )
 
+    # Merge ChatGPT (Codex) models when the upstream is enabled
+    codex_backend = getattr(request.app.state, "codex_backend", None)
+    if codex_backend is not None:
+        for codex_model in codex_backend.models:
+            model_id = codex_model.get("id", "")
+            if not model_id:
+                continue
+            openai_models.append(
+                OpenAIModel(
+                    id=model_id,
+                    owned_by="openai",
+                    description="ChatGPT model via Codex API"
+                )
+            )
+
     return ModelList(data=openai_models)
 
 
@@ -255,6 +277,174 @@ async def _handle_command_code_completion(
     return JSONResponse(content=result)
 
 
+async def _handle_chatgpt_completion(
+    request: Request,
+    request_data: ChatCompletionRequest,
+) -> Response:
+    """Handle a completion routed to the ChatGPT (Codex) upstream (OpenAI API).
+
+    Runs a multi-account failover loop over Codex accounts:
+    - Selects the next Codex account via the Account System
+      (``get_next_account(..., provider="chatgpt")``), honoring the configured
+      strategy (fill-first / round-robin) and Circuit Breaker.
+    - Builds the Codex Responses payload, inlines any remote images, and issues
+      a streaming request through ``CodexHttpClient`` (which handles token
+      refresh on 401/403).
+    - On success, streams (or collects) the response translated to OpenAI form.
+    - On a RECOVERABLE error (429/5xx/capacity) or an SSE-body capacity error,
+      marks the account unavailable and tries the next one; FATAL errors are
+      returned immediately.
+
+    Codex is streaming-only upstream; non-streaming clients get a collected
+    JSON response assembled from the stream.
+
+    Args:
+        request: FastAPI request (for app.state access).
+        request_data: OpenAI chat completion request (model is a Codex id).
+
+    Returns:
+        StreamingResponse (streaming) or JSONResponse (non-streaming).
+
+    Raises:
+        HTTPException: On misconfiguration (503) or fatal upstream errors.
+    """
+    from kiro.account_errors import classify_error_codex, ErrorType
+
+    account_manager = getattr(request.app.state, "account_manager", None)
+    codex_backend = getattr(request.app.state, "codex_backend", None)
+    if account_manager is None or codex_backend is None:
+        raise HTTPException(status_code=503, detail="ChatGPT (Codex) not configured")
+
+    model = request_data.model
+    codex_account_ids = [
+        aid for aid, acc in account_manager._accounts.items() if acc.provider == "chatgpt"
+    ]
+    if not codex_account_ids:
+        raise HTTPException(status_code=404, detail="No active ChatGPT (Codex) accounts configured")
+
+    # Build the Codex payload once and inline remote images before dispatch.
+    payload = build_codex_payload(request_data)
+    payload = await inline_remote_images(payload)
+
+    max_attempts = max(1, len(codex_account_ids) * 2)
+    excluded: set = set()
+    last_error_message = None
+    last_error_status = None
+
+    for _attempt in range(max_attempts):
+        account = await account_manager.get_next_account(
+            model, exclude_accounts=excluded, provider="chatgpt"
+        )
+        if account is None:
+            # No more Codex accounts available for this request.
+            if len(codex_account_ids) == 1:
+                raise HTTPException(
+                    status_code=last_error_status or 503,
+                    detail=last_error_message or "ChatGPT account unavailable",
+                )
+            raise HTTPException(
+                status_code=last_error_status or 503,
+                detail=last_error_message or "All ChatGPT accounts unavailable",
+            )
+
+        auth_manager = account.auth_manager
+        session_id = account.account_meta.get("chatgptAccountId") or account.id
+        client = CodexHttpClient(auth_manager, codex_backend, shared_client=None)
+
+        try:
+            response = await client.request_with_retry(payload, session_id=session_id, stream=True)
+        except HTTPException as e:
+            await client.close()
+            # Network-level failure (502/504) → try next account.
+            if e.status_code in (502, 504):
+                await account_manager.report_failure(
+                    account.id, model, ErrorType.RECOVERABLE, e.status_code, str(e.detail)
+                )
+                last_error_message, last_error_status = str(e.detail), e.status_code
+                if len(codex_account_ids) == 1:
+                    raise
+                excluded.add(account.id)
+                continue
+            raise
+
+        if response.status_code == 200:
+            if request_data.stream:
+                # Report success up front; a mid-stream capacity error (handled
+                # inside the wrapper) will record a failure to trigger cooldown.
+                await account_manager.report_success(account.id, model)
+
+                async def stream_wrapper():
+                    try:
+                        async for chunk in stream_codex_to_openai(response, model):
+                            yield chunk
+                    except CodexSSEAccountFallbackError as e:
+                        # Capacity error surfaced mid-stream. We cannot retry a
+                        # partially-sent stream, so record the failure for
+                        # cooldown and end the stream cleanly.
+                        logger.warning(f"Codex SSE capacity error (account {account.id}): {e.message}")
+                        await account_manager.report_failure(
+                            account.id, model, ErrorType.RECOVERABLE, 503, e.message
+                        )
+                        yield "data: [DONE]\n\n"
+                    finally:
+                        await client.close()
+
+                return StreamingResponse(stream_wrapper(), media_type="text/event-stream")
+
+            # Non-streaming: collect the stream into a JSON response.
+            try:
+                result = await collect_codex_response(response, model)
+            except CodexSSEAccountFallbackError as e:
+                await client.close()
+                await account_manager.report_failure(
+                    account.id, model, ErrorType.RECOVERABLE, 503, e.message
+                )
+                last_error_message, last_error_status = e.message, 503
+                if len(codex_account_ids) == 1:
+                    raise HTTPException(status_code=503, detail=e.message)
+                excluded.add(account.id)
+                continue
+            await client.close()
+            await account_manager.report_success(account.id, model)
+            return JSONResponse(content=result)
+
+        # Non-200: read the error body, classify, and decide.
+        try:
+            error_bytes = await response.aread()
+        except Exception:
+            error_bytes = b""
+        await client.close()
+        error_text = error_bytes.decode("utf-8", errors="replace")
+
+        error_type = classify_error_codex(response.status_code, error_text)
+        last_error_message, last_error_status = error_text, response.status_code
+
+        if error_type == ErrorType.FATAL:
+            return JSONResponse(
+                status_code=response.status_code,
+                content={"error": {
+                    "message": error_text or "ChatGPT (Codex) error",
+                    "type": "codex_api_error",
+                    "code": response.status_code,
+                }},
+            )
+
+        # RECOVERABLE → mark account unavailable (Circuit Breaker backoff) and fail over.
+        await account_manager.report_failure(
+            account.id, model, ErrorType.RECOVERABLE, response.status_code, error_text,
+        )
+        if len(codex_account_ids) == 1:
+            raise HTTPException(status_code=response.status_code, detail=error_text or "ChatGPT unavailable")
+        excluded.add(account.id)
+        continue
+
+    # All attempts exhausted.
+    raise HTTPException(
+        status_code=last_error_status or 503,
+        detail=last_error_message or "All ChatGPT accounts failed.",
+    )
+
+
 @router.post("/v1/chat/completions", dependencies=[Depends(verify_api_key)])
 async def chat_completions(request: Request, request_data: ChatCompletionRequest):
     """
@@ -279,9 +469,14 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
     # Note: prepare_new_request() and log_request_body() are now called by DebugLoggerMiddleware
     # This ensures debug logging works even for requests that fail Pydantic validation (422 errors)
     
-    # Command Code upstream routing (before any Kiro-specific processing)
-    if resolve_upstream(request_data.model) == "command_code":
+    # Upstream provider routing (before any Kiro-specific processing).
+    # Runs on the RAW model name so Codex/Command Code models are detected
+    # before normalization strips any prefix.
+    _upstream = resolve_upstream(request_data.model)
+    if _upstream == "command_code":
         return await _handle_command_code_completion(request, request_data)
+    if _upstream == "chatgpt":
+        return await _handle_chatgpt_completion(request, request_data)
     
     # Check for truncation recovery opportunities
     from kiro.truncation_state import get_tool_truncation, get_content_truncation

@@ -1300,3 +1300,411 @@ class TestFormatDuration:
         """Test formatting days."""
         assert _format_duration(86400) == "1d"
         assert _format_duration(172800) == "2d"
+
+
+
+# =============================================================================
+# Multi-provider (ChatGPT/Codex) Account System tests
+# =============================================================================
+
+def _make_manager(tmp_path):
+    """Create an AccountManager with temp file paths (no credentials loaded)."""
+    return AccountManager(
+        credentials_file=str(tmp_path / "creds.json"),
+        state_file=str(tmp_path / "state.json"),
+    )
+
+
+def _inject_account(manager, account_id, provider, *, models=("gpt-5.5",)):
+    """Inject a pre-initialized account so get_next_account skips lazy init.
+
+    The auth_manager/model_resolver are lightweight stubs — no network.
+    """
+    auth = MagicMock()
+    auth.provider = provider
+    resolver = MagicMock()
+    resolver.get_available_models.return_value = list(models)
+    acc = Account(
+        id=account_id,
+        provider=provider,
+        auth_manager=auth,
+        model_cache=MagicMock(),
+        model_resolver=resolver,
+        models_cached_at=time.time(),
+    )
+    manager._accounts[account_id] = acc
+    return acc
+
+
+class TestProviderFiltering:
+    """get_next_account must only ever return accounts of the requested provider."""
+
+    @pytest.mark.asyncio
+    async def test_selects_only_requested_provider(self, tmp_path):
+        """
+        What it does: With mixed kiro+chatgpt accounts, requesting chatgpt returns a chatgpt account.
+        Purpose: Provider isolation in selection.
+        """
+        manager = _make_manager(tmp_path)
+        _inject_account(manager, "kiro_a", "kiro", models=("claude-sonnet-4.5",))
+        _inject_account(manager, "kiro_b", "kiro", models=("claude-sonnet-4.5",))
+        _inject_account(manager, "chatgpt_1", "chatgpt")
+        _inject_account(manager, "chatgpt_2", "chatgpt")
+
+        acc = await manager.get_next_account("gpt-5.5", provider="chatgpt")
+        assert acc is not None
+        assert acc.provider == "chatgpt"
+
+    @pytest.mark.asyncio
+    async def test_kiro_selection_unaffected_by_codex_accounts(self, tmp_path):
+        """
+        What it does: Requesting kiro never returns a chatgpt account.
+        Purpose: No cross-provider leakage; Kiro path unchanged.
+        """
+        manager = _make_manager(tmp_path)
+        _inject_account(manager, "kiro_a", "kiro", models=("claude-sonnet-4.5",))
+        _inject_account(manager, "chatgpt_1", "chatgpt")
+        _inject_account(manager, "chatgpt_2", "chatgpt")
+
+        acc = await manager.get_next_account("claude-sonnet-4.5", provider="kiro")
+        assert acc is not None
+        assert acc.provider == "kiro"
+        assert acc.id == "kiro_a"
+
+    @pytest.mark.asyncio
+    async def test_no_accounts_for_provider_returns_none(self, tmp_path):
+        """
+        What it does: Requesting a provider with no accounts returns None.
+        Purpose: Graceful handling when a provider isn't configured.
+        """
+        manager = _make_manager(tmp_path)
+        _inject_account(manager, "kiro_a", "kiro", models=("claude-sonnet-4.5",))
+
+        acc = await manager.get_next_account("gpt-5.5", provider="chatgpt")
+        assert acc is None
+
+
+class TestCodexSingleAccountBypass:
+    """A single Codex account bypasses the Circuit Breaker (like Kiro)."""
+
+    @pytest.mark.asyncio
+    async def test_single_codex_account_ignores_failures(self, tmp_path):
+        """
+        What it does: One chatgpt account is returned even with failures set.
+        Purpose: Single-account bypass so users see real upstream errors.
+        """
+        manager = _make_manager(tmp_path)
+        acc = _inject_account(manager, "chatgpt_1", "chatgpt")
+        acc.failures = 10
+        acc.last_failure_time = time.time()
+        # Add a kiro account too, to prove the count is per-provider.
+        _inject_account(manager, "kiro_a", "kiro", models=("claude-sonnet-4.5",))
+
+        result = await manager.get_next_account("gpt-5.5", provider="chatgpt")
+        assert result is acc
+
+
+class TestCodexFillFirst:
+    """Fill-first: stay on one account until it fails, then move to the next."""
+
+    @pytest.mark.asyncio
+    async def test_fill_first_sticks_then_fails_over(self, tmp_path, monkeypatch):
+        """
+        What it does: fill-first returns acc1 repeatedly; excluding it returns acc2.
+        Purpose: Drain-one-then-next behavior driven by exclude_accounts.
+        """
+        monkeypatch.setattr("kiro.account_manager.CHATGPT_STRATEGY", "fill-first")
+        manager = _make_manager(tmp_path)
+        _inject_account(manager, "chatgpt_1", "chatgpt")
+        _inject_account(manager, "chatgpt_2", "chatgpt")
+
+        # Repeated calls stick to the same (first) account.
+        first = await manager.get_next_account("gpt-5.5", provider="chatgpt")
+        again = await manager.get_next_account("gpt-5.5", provider="chatgpt")
+        assert first.id == again.id == "chatgpt_1"
+
+        # Excluding the drained account fails over to the other one.
+        nxt = await manager.get_next_account(
+            "gpt-5.5", exclude_accounts={"chatgpt_1"}, provider="chatgpt"
+        )
+        assert nxt.id == "chatgpt_2"
+
+
+class TestCodexRoundRobin:
+    """Round-robin: rotate accounts after CHATGPT_STICKY_LIMIT successes."""
+
+    @pytest.mark.asyncio
+    async def test_round_robin_rotates_after_limit(self, tmp_path, monkeypatch):
+        """
+        What it does: With sticky limit 1, consecutive successes rotate accounts.
+        Purpose: Verify round-robin advances the sticky index per the limit.
+        """
+        monkeypatch.setattr("kiro.account_manager.CHATGPT_STRATEGY", "round-robin")
+        monkeypatch.setattr("kiro.account_manager.CHATGPT_STICKY_LIMIT", 1)
+        manager = _make_manager(tmp_path)
+        _inject_account(manager, "chatgpt_1", "chatgpt")
+        _inject_account(manager, "chatgpt_2", "chatgpt")
+
+        # First selection → acc1; report success (count → 1, reaches limit).
+        a1 = await manager.get_next_account("gpt-5.5", provider="chatgpt")
+        await manager.report_success(a1.id, "gpt-5.5")
+        # Next selection should rotate to acc2.
+        a2 = await manager.get_next_account("gpt-5.5", provider="chatgpt")
+        await manager.report_success(a2.id, "gpt-5.5")
+        # And rotate back to acc1.
+        a3 = await manager.get_next_account("gpt-5.5", provider="chatgpt")
+
+        assert a1.id != a2.id
+        assert a3.id == a1.id
+
+    @pytest.mark.asyncio
+    async def test_round_robin_respects_sticky_limit_of_two(self, tmp_path, monkeypatch):
+        """
+        What it does: With sticky limit 2, the same account serves 2 requests then rotates.
+        Purpose: Verify the limit is honored, not hardcoded to 1.
+        """
+        monkeypatch.setattr("kiro.account_manager.CHATGPT_STRATEGY", "round-robin")
+        monkeypatch.setattr("kiro.account_manager.CHATGPT_STICKY_LIMIT", 2)
+        manager = _make_manager(tmp_path)
+        _inject_account(manager, "chatgpt_1", "chatgpt")
+        _inject_account(manager, "chatgpt_2", "chatgpt")
+
+        s1 = await manager.get_next_account("gpt-5.5", provider="chatgpt")
+        await manager.report_success(s1.id, "gpt-5.5")
+        s2 = await manager.get_next_account("gpt-5.5", provider="chatgpt")
+        await manager.report_success(s2.id, "gpt-5.5")
+        s3 = await manager.get_next_account("gpt-5.5", provider="chatgpt")
+
+        assert s1.id == s2.id  # served twice
+        assert s3.id != s1.id  # rotated on the third
+
+
+class TestCodexReportFailureResetsRoundRobin:
+    """A RECOVERABLE failure resets the account's consecutive-use counter."""
+
+    @pytest.mark.asyncio
+    async def test_failure_resets_consecutive_count(self, tmp_path):
+        """
+        What it does: report_failure(RECOVERABLE) zeroes consecutive_use_count.
+        Purpose: A recovered account should not carry a stale rotation count.
+        """
+        manager = _make_manager(tmp_path)
+        acc = _inject_account(manager, "chatgpt_1", "chatgpt")
+        acc.consecutive_use_count = 5
+
+        await manager.report_failure("chatgpt_1", "gpt-5.5", ErrorType.RECOVERABLE, 429, "usage_limit_reached")
+
+        assert acc.consecutive_use_count == 0
+        assert acc.failures == 1
+
+
+class TestPerProviderStateMigration:
+    """State persistence: per-provider index + backward-compatible legacy int."""
+
+    @pytest.mark.asyncio
+    async def test_legacy_index_maps_to_kiro(self, tmp_path):
+        """
+        What it does: An old state file with current_account_index loads into the kiro slot.
+        Purpose: Backward compatibility with pre-multi-provider state.json.
+        """
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps({
+            "current_account_index": 3,
+            "model_to_accounts": {},
+            "accounts": {},
+        }))
+        manager = AccountManager(
+            credentials_file=str(tmp_path / "creds.json"),
+            state_file=str(state_file),
+        )
+        await manager.load_state()
+
+        assert manager._current_index_by_provider.get("kiro") == 3
+        # Backward-compatible property still reads the kiro slot.
+        assert manager._current_account_index == 3
+
+    @pytest.mark.asyncio
+    async def test_new_index_map_loads(self, tmp_path):
+        """
+        What it does: A new state file with current_index_by_provider loads as-is.
+        Purpose: Round-trip of the new per-provider index format.
+        """
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps({
+            "current_index_by_provider": {"kiro": 1, "chatgpt": 2},
+            "model_to_accounts": {},
+            "accounts": {},
+        }))
+        manager = AccountManager(
+            credentials_file=str(tmp_path / "creds.json"),
+            state_file=str(state_file),
+        )
+        await manager.load_state()
+
+        assert manager._current_index_by_provider["kiro"] == 1
+        assert manager._current_index_by_provider["chatgpt"] == 2
+
+    @pytest.mark.asyncio
+    async def test_save_state_includes_provider_and_indices(self, tmp_path):
+        """
+        What it does: _save_state writes provider, consecutive_use_count, and both index forms.
+        Purpose: Ensure persisted schema carries the new fields.
+        """
+        manager = _make_manager(tmp_path)
+        acc = _inject_account(manager, "chatgpt_1", "chatgpt")
+        acc.consecutive_use_count = 2
+        manager._current_index_by_provider = {"kiro": 0, "chatgpt": 0}
+
+        await manager._save_state()
+
+        saved = json.loads((tmp_path / "state.json").read_text())
+        assert saved["accounts"]["chatgpt_1"]["provider"] == "chatgpt"
+        assert saved["accounts"]["chatgpt_1"]["consecutive_use_count"] == 2
+        assert "current_index_by_provider" in saved
+        assert "current_account_index" in saved  # legacy key retained
+
+
+class TestCodexCredentialLoading:
+    """Loading ChatGPT accounts from the dedicated Codex credentials file."""
+
+    @pytest.mark.asyncio
+    async def test_disabled_does_not_load_codex(self, tmp_path, monkeypatch):
+        """
+        What it does: With CHATGPT_ENABLED false, no Codex accounts are loaded.
+        Purpose: Opt-in; no effect when disabled.
+        """
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", False)
+        codex_file = tmp_path / "chatgpt_credentials.json"
+        codex_file.write_text(json.dumps([
+            {"provider": "chatgpt", "accessToken": "at", "refreshToken": "rt", "chatgptAccountId": "acc_1"},
+        ]))
+        monkeypatch.setattr("kiro.config.CHATGPT_CREDENTIALS_FILE", str(codex_file))
+
+        creds_file = tmp_path / "creds.json"
+        creds_file.write_text(json.dumps([]))
+        manager = AccountManager(credentials_file=str(creds_file), state_file=str(tmp_path / "state.json"))
+        await manager.load_credentials()
+
+        assert not any(a.provider == "chatgpt" for a in manager._accounts.values())
+
+    @pytest.mark.asyncio
+    async def test_enabled_loads_codex_accounts(self, tmp_path, monkeypatch):
+        """
+        What it does: With CHATGPT_ENABLED true, valid Codex accounts are loaded.
+        Purpose: Core multi-account credential loading.
+        """
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", True)
+        codex_file = tmp_path / "chatgpt_credentials.json"
+        codex_file.write_text(json.dumps([
+            {"provider": "chatgpt", "accessToken": "at1", "refreshToken": "rt1", "chatgptAccountId": "acc_1"},
+            {"provider": "chatgpt", "accessToken": "at2", "refreshToken": "rt2", "chatgptAccountId": "acc_2"},
+        ]))
+        monkeypatch.setattr("kiro.config.CHATGPT_CREDENTIALS_FILE", str(codex_file))
+
+        creds_file = tmp_path / "creds.json"
+        creds_file.write_text(json.dumps([]))
+        manager = AccountManager(credentials_file=str(creds_file), state_file=str(tmp_path / "state.json"))
+        await manager.load_credentials()
+
+        codex_accounts = [a for a in manager._accounts.values() if a.provider == "chatgpt"]
+        assert len(codex_accounts) == 2
+        meta_ids = {a.account_meta.get("chatgptAccountId") for a in codex_accounts}
+        assert meta_ids == {"acc_1", "acc_2"}
+
+    @pytest.mark.asyncio
+    async def test_skips_disabled_and_incomplete_entries(self, tmp_path, monkeypatch):
+        """
+        What it does: enabled=false and entries missing tokens are skipped.
+        Purpose: Robust credential validation.
+        """
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", True)
+        codex_file = tmp_path / "chatgpt_credentials.json"
+        codex_file.write_text(json.dumps([
+            {"provider": "chatgpt", "accessToken": "at1", "refreshToken": "rt1", "chatgptAccountId": "acc_ok"},
+            {"provider": "chatgpt", "enabled": False, "accessToken": "at2", "refreshToken": "rt2", "chatgptAccountId": "acc_disabled"},
+            {"provider": "chatgpt", "accessToken": "at3", "chatgptAccountId": "acc_no_refresh"},
+            {"provider": "chatgpt", "refreshToken": "rt4", "chatgptAccountId": "acc_no_access"},
+        ]))
+        monkeypatch.setattr("kiro.config.CHATGPT_CREDENTIALS_FILE", str(codex_file))
+
+        creds_file = tmp_path / "creds.json"
+        creds_file.write_text(json.dumps([]))
+        manager = AccountManager(credentials_file=str(creds_file), state_file=str(tmp_path / "state.json"))
+        await manager.load_credentials()
+
+        codex_accounts = [a for a in manager._accounts.values() if a.provider == "chatgpt"]
+        assert len(codex_accounts) == 1
+        assert codex_accounts[0].account_meta["chatgptAccountId"] == "acc_ok"
+
+    @pytest.mark.asyncio
+    async def test_missing_file_when_enabled_is_graceful(self, tmp_path, monkeypatch):
+        """
+        What it does: Enabled but no Codex file → no crash, no Codex accounts.
+        Purpose: Fail-safe when misconfigured.
+        """
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", True)
+        monkeypatch.setattr("kiro.config.CHATGPT_CREDENTIALS_FILE", str(tmp_path / "does_not_exist.json"))
+
+        creds_file = tmp_path / "creds.json"
+        creds_file.write_text(json.dumps([]))
+        manager = AccountManager(credentials_file=str(creds_file), state_file=str(tmp_path / "state.json"))
+        await manager.load_credentials()
+
+        assert not any(a.provider == "chatgpt" for a in manager._accounts.values())
+
+
+class TestCodexAccountInitialization:
+    """Lazy initialization of a Codex account builds a CodexAuthManager + static models."""
+
+    @pytest.mark.asyncio
+    async def test_initialize_codex_account(self, tmp_path, monkeypatch):
+        """
+        What it does: _initialize_codex_account sets auth_manager, cache, resolver.
+        Purpose: Codex accounts init from static registry without network model fetch.
+        """
+        manager = _make_manager(tmp_path)
+        # Inject an uninitialized codex account with token metadata.
+        manager._accounts["chatgpt_1"] = Account(
+            id="chatgpt_1",
+            provider="chatgpt",
+            account_meta={
+                "accessToken": "at", "refreshToken": "rt",
+                "idToken": None, "chatgptAccountId": "acc_1", "expiresAt": None,
+            },
+        )
+
+        # Stub CodexAuthManager.get_access_token so no network occurs.
+        async def fake_get_token(self):
+            return "valid_token"
+        monkeypatch.setattr("kiro.auth_codex.CodexAuthManager.get_access_token", fake_get_token)
+
+        ok = await manager._initialize_account("chatgpt_1")
+
+        assert ok is True
+        acc = manager._accounts["chatgpt_1"]
+        assert acc.auth_manager is not None
+        assert acc.auth_manager.provider == "chatgpt"
+        assert acc.model_resolver is not None
+        # Static Codex models registered.
+        assert "gpt-5.5" in acc.model_resolver.get_available_models()
+
+    @pytest.mark.asyncio
+    async def test_initialize_codex_account_auth_failure(self, tmp_path, monkeypatch):
+        """
+        What it does: A refresh failure during init returns False.
+        Purpose: Bad credentials don't crash; account stays uninitialized.
+        """
+        manager = _make_manager(tmp_path)
+        manager._accounts["chatgpt_bad"] = Account(
+            id="chatgpt_bad",
+            provider="chatgpt",
+            account_meta={"accessToken": "", "refreshToken": "", "chatgptAccountId": "acc_bad"},
+        )
+
+        async def fail_get_token(self):
+            raise ValueError("no token")
+        monkeypatch.setattr("kiro.auth_codex.CodexAuthManager.get_access_token", fail_get_token)
+
+        ok = await manager._initialize_account("chatgpt_bad")
+        assert ok is False
+        assert manager._accounts["chatgpt_bad"].auth_manager is None

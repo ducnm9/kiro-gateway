@@ -61,6 +61,13 @@ from kiro.converters_cc import build_cc_payload_anthropic
 from kiro.streaming_cc import collect_cc_anthropic_response, stream_cc_to_anthropic
 from kiro.upstream_cc import raise_cc_http_error
 from kiro.network_errors import classify_network_error
+from kiro.converters_codex import build_codex_payload_anthropic, inline_remote_images
+from kiro.streaming_codex import (
+    collect_codex_anthropic_response,
+    stream_codex_to_anthropic,
+    CodexSSEAccountFallbackError,
+)
+from kiro.http_client_codex import CodexHttpClient
 
 # Import debug_logger
 try:
@@ -185,6 +192,152 @@ async def _handle_command_code_completion_anthropic(
     return JSONResponse(content=result)
 
 
+async def _handle_chatgpt_completion_anthropic(
+    request: Request,
+    request_data: AnthropicMessagesRequest,
+) -> Response:
+    """Handle a /v1/messages request routed to the ChatGPT (Codex) upstream.
+
+    Symmetric to the OpenAI handler (`routes_openai._handle_chatgpt_completion`)
+    but translates to/from the Anthropic Messages format. Runs the same
+    multi-account failover loop over Codex accounts (fill-first / round-robin,
+    Circuit Breaker), refreshes tokens on 401/403, and fails over on RECOVERABLE
+    errors (429/5xx/capacity) including SSE-body capacity errors.
+
+    Args:
+        request: FastAPI request (for app.state access).
+        request_data: Anthropic Messages request (model is a Codex id).
+
+    Returns:
+        StreamingResponse (streaming) or JSONResponse (non-streaming).
+
+    Raises:
+        HTTPException: On misconfiguration (503) or fatal upstream errors.
+    """
+    from kiro.account_errors import classify_error_codex, ErrorType
+
+    account_manager = getattr(request.app.state, "account_manager", None)
+    codex_backend = getattr(request.app.state, "codex_backend", None)
+    if account_manager is None or codex_backend is None:
+        raise HTTPException(status_code=503, detail="ChatGPT (Codex) not configured")
+
+    model = request_data.model
+    codex_account_ids = [
+        aid for aid, acc in account_manager._accounts.items() if acc.provider == "chatgpt"
+    ]
+    if not codex_account_ids:
+        raise HTTPException(status_code=404, detail="No active ChatGPT (Codex) accounts configured")
+
+    payload = build_codex_payload_anthropic(request_data)
+    payload = await inline_remote_images(payload)
+
+    max_attempts = max(1, len(codex_account_ids) * 2)
+    excluded: set = set()
+    last_error_message = None
+    last_error_status = None
+
+    for _attempt in range(max_attempts):
+        account = await account_manager.get_next_account(
+            model, exclude_accounts=excluded, provider="chatgpt"
+        )
+        if account is None:
+            raise HTTPException(
+                status_code=last_error_status or 503,
+                detail=last_error_message or "All ChatGPT accounts unavailable",
+            )
+
+        auth_manager = account.auth_manager
+        session_id = account.account_meta.get("chatgptAccountId") or account.id
+        client = CodexHttpClient(auth_manager, codex_backend, shared_client=None)
+
+        try:
+            response = await client.request_with_retry(payload, session_id=session_id, stream=True)
+        except HTTPException as e:
+            await client.close()
+            if e.status_code in (502, 504):
+                await account_manager.report_failure(
+                    account.id, model, ErrorType.RECOVERABLE, e.status_code, str(e.detail)
+                )
+                last_error_message, last_error_status = str(e.detail), e.status_code
+                if len(codex_account_ids) == 1:
+                    raise
+                excluded.add(account.id)
+                continue
+            raise
+
+        if response.status_code == 200:
+            if request_data.stream:
+                await account_manager.report_success(account.id, model)
+
+                async def stream_wrapper():
+                    try:
+                        async for chunk in stream_codex_to_anthropic(response, model):
+                            yield chunk
+                    except CodexSSEAccountFallbackError as e:
+                        logger.warning(f"Codex SSE capacity error (account {account.id}): {e.message}")
+                        await account_manager.report_failure(
+                            account.id, model, ErrorType.RECOVERABLE, 503, e.message
+                        )
+                        # End the Anthropic stream cleanly.
+                        yield "event: message_stop\ndata: {\"type\": \"message_stop\"}\n\n"
+                    finally:
+                        await client.close()
+
+                return StreamingResponse(
+                    stream_wrapper(),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+                )
+
+            try:
+                result = await collect_codex_anthropic_response(response, model)
+            except CodexSSEAccountFallbackError as e:
+                await client.close()
+                await account_manager.report_failure(
+                    account.id, model, ErrorType.RECOVERABLE, 503, e.message
+                )
+                last_error_message, last_error_status = e.message, 503
+                if len(codex_account_ids) == 1:
+                    raise HTTPException(status_code=503, detail=e.message)
+                excluded.add(account.id)
+                continue
+            await client.close()
+            await account_manager.report_success(account.id, model)
+            return JSONResponse(content=result)
+
+        try:
+            error_bytes = await response.aread()
+        except Exception:
+            error_bytes = b""
+        await client.close()
+        error_text = error_bytes.decode("utf-8", errors="replace")
+
+        error_type = classify_error_codex(response.status_code, error_text)
+        last_error_message, last_error_status = error_text, response.status_code
+
+        if error_type == ErrorType.FATAL:
+            return JSONResponse(
+                status_code=response.status_code,
+                content={"type": "error", "error": {
+                    "type": "codex_api_error",
+                    "message": error_text or "ChatGPT (Codex) error",
+                }},
+            )
+
+        await account_manager.report_failure(
+            account.id, model, ErrorType.RECOVERABLE, response.status_code, error_text,
+        )
+        if len(codex_account_ids) == 1:
+            raise HTTPException(status_code=response.status_code, detail=error_text or "ChatGPT unavailable")
+        excluded.add(account.id)
+        continue
+
+    raise HTTPException(
+        status_code=last_error_status or 503,
+        detail=last_error_message or "All ChatGPT accounts failed.",
+    )
+
+
 @router.post("/v1/messages", dependencies=[Depends(verify_anthropic_api_key)])
 async def messages(
     request: Request,
@@ -222,9 +375,12 @@ async def messages(
     # Note: prepare_new_request() and log_request_body() are now called by DebugLoggerMiddleware
     # This ensures debug logging works even for requests that fail Pydantic validation (422 errors)
     
-    # Command Code upstream routing (before any Kiro-specific processing)
-    if resolve_upstream(request_data.model) == "command_code":
+    # Upstream provider routing (before any Kiro-specific processing).
+    _upstream = resolve_upstream(request_data.model)
+    if _upstream == "command_code":
         return await _handle_command_code_completion_anthropic(request, request_data)
+    if _upstream == "chatgpt":
+        return await _handle_chatgpt_completion_anthropic(request, request_data)
     
     # Check for truncation recovery opportunities
     from kiro.truncation_state import get_tool_truncation, get_content_truncation

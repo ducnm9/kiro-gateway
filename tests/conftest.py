@@ -509,6 +509,8 @@ def block_all_network_calls():
         patch('kiro.http_client.httpx.AsyncClient', return_value=mock_async_client),
         patch('kiro.streaming_openai.httpx.AsyncClient', return_value=mock_async_client),
         patch('kiro.account_manager.httpx.AsyncClient', return_value=mock_async_client),
+        patch('kiro.auth_codex.httpx.AsyncClient', return_value=mock_async_client),
+        patch('kiro.http_client_codex.httpx.AsyncClient', return_value=mock_async_client),
     ]
     
     # Start patchers

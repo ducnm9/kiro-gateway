@@ -59,6 +59,62 @@ class TestResolveUpstream:
         assert result == "command_code"
 
 
+class TestResolveUpstreamChatGPT:
+    """Tests for ChatGPT (Codex) routing in resolve_upstream."""
+
+    def test_codex_model_routes_to_chatgpt_when_enabled(self, monkeypatch):
+        """
+        What it does: A registered Codex model id routes to "chatgpt" when enabled.
+        Purpose: Core Codex routing.
+        """
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", True)
+        monkeypatch.setattr("kiro.config.CHATGPT_MODEL_IDS", {"gpt-5.5", "gpt-5.4"})
+
+        assert resolve_upstream("gpt-5.5") == "chatgpt"
+
+    def test_codex_model_routes_to_kiro_when_disabled(self, monkeypatch):
+        """
+        What it does: A Codex model routes to Kiro when CHATGPT_ENABLED is false.
+        Purpose: Opt-in; no Codex path when disabled (backward compat).
+        """
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", False)
+        monkeypatch.setattr("kiro.config.CHATGPT_MODEL_IDS", {"gpt-5.5"})
+
+        assert resolve_upstream("gpt-5.5") == "kiro"
+
+    def test_unknown_bare_model_not_codex(self, monkeypatch):
+        """
+        What it does: A bare model not in the Codex registry does not route to chatgpt.
+        Purpose: Only registered Codex ids are matched.
+        """
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", True)
+        monkeypatch.setattr("kiro.config.CHATGPT_MODEL_IDS", {"gpt-5.5"})
+
+        assert resolve_upstream("claude-haiku-4.5") == "kiro"
+
+    def test_codex_takes_priority_over_command_code(self, monkeypatch):
+        """
+        What it does: A Codex model routes to chatgpt even with Command Code enabled.
+        Purpose: Codex check runs first; no collision (Codex ids are bare names).
+        """
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", True)
+        monkeypatch.setattr("kiro.config.CHATGPT_MODEL_IDS", {"gpt-5.5"})
+        monkeypatch.setattr("kiro.config.COMMAND_CODE_ENABLED", True)
+
+        assert resolve_upstream("gpt-5.5") == "chatgpt"
+
+    def test_command_code_model_unaffected_by_codex(self, monkeypatch):
+        """
+        What it does: A slash model still routes to command_code with Codex enabled.
+        Purpose: No collision between Codex (bare) and Command Code (qualified).
+        """
+        monkeypatch.setattr("kiro.config.CHATGPT_ENABLED", True)
+        monkeypatch.setattr("kiro.config.CHATGPT_MODEL_IDS", {"gpt-5.5"})
+        monkeypatch.setattr("kiro.config.COMMAND_CODE_ENABLED", True)
+
+        assert resolve_upstream("deepseek/deepseek-v4-pro") == "command_code"
+
+
 # =============================================================================
 # Tests for CommandCodeBackend
 # =============================================================================

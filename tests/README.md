@@ -72,12 +72,14 @@ pytest -n auto
 tests/
 ├── conftest.py                      # Shared fixtures and utilities
 ├── unit/                            # Unit tests for individual components
-│   ├── test_account_errors.py      # Account System error classification (FATAL vs RECOVERABLE)
-│   ├── test_account_manager.py     # AccountManager tests (failover, Circuit Breaker, sticky behavior, state persistence)
+│   ├── test_account_errors.py      # Account System error classification (FATAL vs RECOVERABLE, incl. Codex classify_error_codex)
+│   ├── test_account_manager.py     # AccountManager tests (failover, Circuit Breaker, sticky, state; multi-provider Codex: filtering, fill-first, round-robin, credential loading, init)
+│   ├── test_auth_codex.py          # CodexAuthManager tests (OAuth refresh, expiry, JWT account-id backfill, thread-safe refresh, token masking)
 │   ├── test_auth_manager.py        # KiroAuthManager tests (including api_region parameter priority)
 │   ├── test_cache.py               # ModelInfoCache tests (is_valid_model, add_hidden_model)
-│   ├── test_config.py              # Configuration tests (SERVER_HOST, SERVER_PORT, LOG_LEVEL, Account System constants)
+│   ├── test_config.py              # Configuration tests (SERVER_HOST, SERVER_PORT, LOG_LEVEL, Account System + ChatGPT/Codex constants)
 │   ├── test_converters_anthropic.py # Anthropic Messages API → Kiro converter tests
+│   ├── test_converters_codex.py    # OpenAI/Anthropic → Codex Responses converter tests (input array, instructions, tools, reasoning, allowlist, remote-image inlining)
 │   ├── test_converters_core.py     # Shared conversion logic tests (UnifiedMessage, merging, truncation recovery system prompt)
 │   ├── test_converters_openai.py   # OpenAI Chat API → Kiro converter tests
 │   ├── test_debug_logger.py        # DebugLogger tests (off/errors/all modes)
@@ -94,8 +96,11 @@ tests/
 │   ├── test_network_errors.py      # Network error handling tests
 │   ├── test_parsers.py             # AwsEventStreamParser tests (JSON truncation diagnostics, truncation recovery integration)
 │   ├── test_routes_anthropic.py    # Anthropic API endpoint tests (/v1/messages, truncation recovery, WebSearch, Account System failover)
+│   ├── test_routes_codex_anthropic.py # Anthropic /v1/messages routing to Codex (non-stream, stream, failover, FATAL, disabled)
+│   ├── test_routes_codex_openai.py # OpenAI /v1/chat/completions routing to Codex (non-stream, stream, failover, account-id binding, /v1/models merge)
 │   ├── test_routes_openai.py       # OpenAI API endpoint tests (/v1/chat/completions, truncation recovery, WebSearch, Account System failover)
 │   ├── test_streaming_anthropic.py # Anthropic streaming response tests (truncation detection, stop_reason priority, initial_response reuse)
+│   ├── test_streaming_codex.py     # Codex Responses SSE parsing + OpenAI/Anthropic stream+non-stream translation, SSE-body capacity errors
 │   ├── test_streaming_core.py      # Shared streaming logic tests (first-token retry, initial_response parameter)
 │   ├── test_streaming_openai.py    # OpenAI streaming response tests (truncation detection, finish_reason priority, initial_response reuse)
 │   ├── test_thinking_parser.py     # ThinkingParser tests (FSM for thinking blocks)
@@ -105,6 +110,7 @@ tests/
 │   └── test_vpn_proxy.py           # VPN/Proxy configuration tests (environment variables, URL normalization, NO_PROXY)
 ├── integration/                     # Integration tests for full flow
 │   ├── test_account_system_flow.py # Account System integration tests (full failover, sticky behavior, Circuit Breaker, state persistence)
+│   ├── test_chatgpt_flow.py        # ChatGPT/Codex end-to-end (real AccountManager: fill-first failover, round-robin, account-id binding; OpenAI+Anthropic, stream+non-stream)
 │   └── test_full_flow.py           # End-to-end tests
 └── README.md                        # This file
 ```
