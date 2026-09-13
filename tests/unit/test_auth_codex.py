@@ -457,3 +457,125 @@ class TestProtocolConformance:
         mgr = KiroAuthManager(refresh_token="rt", region="us-east-1")
         assert isinstance(mgr, UpstreamAuthManager)
         assert mgr.provider == "kiro"
+
+
+# =============================================================================
+# Token-refresh callback (persistence hook)
+# =============================================================================
+
+class TestOnTokenRefreshedCallback:
+    """Tests for the on_token_refreshed callback used to persist rotated tokens."""
+
+    @pytest.mark.asyncio
+    async def test_callback_invoked_after_successful_refresh(self):
+        """
+        What it does: The callback fires once after a successful refresh with the
+            new token fields and the pre-rotation refresh token.
+        Purpose: Enable persisting rotated tokens to disk.
+        """
+        captured = []
+        mgr = CodexAuthManager(
+            "old_at", "rt_old", chatgpt_account_id="acc",
+            on_token_refreshed=lambda payload: captured.append(payload),
+        )
+
+        patcher, _ = _patch_refresh({
+            "access_token": "new_at", "refresh_token": "rt_new", "expires_in": 3600,
+        })
+        with patcher:
+            await mgr.force_refresh()
+
+        assert len(captured) == 1
+        payload = captured[0]
+        assert payload["access_token"] == "new_at"
+        assert payload["refresh_token"] == "rt_new"
+        assert payload["chatgpt_account_id"] == "acc"
+        # match_refresh_token must be the PRE-rotation token so on-disk lookup works.
+        assert payload["match_refresh_token"] == "rt_old"
+        assert payload["expires_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_callback_not_invoked_when_token_valid(self):
+        """
+        What it does: No callback when the cached token is still valid (no refresh).
+        Purpose: Avoid spurious disk writes when nothing rotated.
+        """
+        captured = []
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        mgr = CodexAuthManager(
+            "valid_at", "rt", chatgpt_account_id="acc", expires_at=future,
+            on_token_refreshed=lambda payload: captured.append(payload),
+        )
+
+        patcher, _ = _patch_refresh({"access_token": "unused"})
+        with patcher:
+            await mgr.get_access_token()
+
+        assert captured == []
+
+    @pytest.mark.asyncio
+    async def test_callback_receives_rotated_id_token_and_account_id(self):
+        """
+        What it does: When the refresh returns a new id_token, the callback sees
+            the updated id_token and backfilled account id.
+        Purpose: Persist the freshest identity claims.
+        """
+        captured = []
+        new_id = _account_jwt("acc_new")
+        mgr = CodexAuthManager(
+            "old_at", "rt", chatgpt_account_id="acc_old",
+            on_token_refreshed=lambda payload: captured.append(payload),
+        )
+
+        patcher, _ = _patch_refresh({
+            "access_token": "new_at", "id_token": new_id, "expires_in": 3600,
+        })
+        with patcher:
+            await mgr.force_refresh()
+
+        assert captured[0]["id_token"] == new_id
+        assert captured[0]["chatgpt_account_id"] == "acc_new"
+
+    @pytest.mark.asyncio
+    async def test_callback_exception_does_not_break_refresh(self):
+        """
+        What it does: A callback that raises does not fail the refresh; the new
+            token is still returned.
+        Purpose: A persistence failure must never break a working request path.
+        """
+        def boom(_payload):
+            raise RuntimeError("disk on fire")
+
+        mgr = CodexAuthManager(
+            "old_at", "rt", chatgpt_account_id="acc", on_token_refreshed=boom,
+        )
+
+        patcher, _ = _patch_refresh({"access_token": "new_at", "expires_in": 3600})
+        with patcher:
+            token = await mgr.force_refresh()
+
+        assert token == "new_at"
+
+    @pytest.mark.asyncio
+    async def test_no_callback_configured_is_safe(self):
+        """
+        What it does: Refresh works when no callback is configured (backward compat).
+        Purpose: The callback is strictly optional.
+        """
+        mgr = CodexAuthManager("old_at", "rt", chatgpt_account_id="acc")
+
+        patcher, _ = _patch_refresh({"access_token": "new_at", "expires_in": 3600})
+        with patcher:
+            token = await mgr.force_refresh()
+
+        assert token == "new_at"
+
+    def test_refresh_token_property_reflects_rotation(self):
+        """
+        What it does: The refresh_token property exposes the current in-memory token.
+        Purpose: Let the Account System sync rotated tokens into account_meta.
+        """
+        mgr = CodexAuthManager("at", "rt_initial", chatgpt_account_id="acc")
+        assert mgr.refresh_token == "rt_initial"
+        mgr._refresh_token = "rt_rotated"
+        assert mgr.refresh_token == "rt_rotated"

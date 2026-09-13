@@ -40,7 +40,7 @@ import base64
 import binascii
 import json
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import httpx
 from loguru import logger
@@ -170,6 +170,7 @@ class CodexAuthManager:
         token_url: Optional[str] = None,
         scope: Optional[str] = None,
         refresh_threshold: Optional[int] = None,
+        on_token_refreshed: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> None:
         """Initialize the Codex auth manager for one account.
 
@@ -185,6 +186,15 @@ class CodexAuthManager:
             scope: OAuth scope for refresh (defaults to configured value).
             refresh_threshold: Seconds before expiry to trigger refresh
                 (defaults to configured value).
+            on_token_refreshed: Optional callback invoked after every successful
+                refresh with a dict of the new token fields
+                (``access_token``, ``refresh_token``, ``id_token``,
+                ``expires_at``, ``chatgpt_account_id``, ``match_refresh_token``).
+                Used to persist rotated tokens to disk. OpenAI rotates refresh
+                tokens on every use, so without persistence the on-disk token
+                becomes stale and the next restart fails with
+                ``refresh_token_reused``. The callback must not raise; the auth
+                manager itself performs no file I/O.
         """
         self._access_token: str = access_token
         self._refresh_token: str = refresh_token
@@ -196,6 +206,7 @@ class CodexAuthManager:
         self._refresh_threshold: int = (
             refresh_threshold if refresh_threshold is not None else CHATGPT_TOKEN_REFRESH_THRESHOLD
         )
+        self._on_token_refreshed = on_token_refreshed
         self._lock = asyncio.Lock()
 
         # Backfill the account id from JWT claims when not provided explicitly.
@@ -280,6 +291,10 @@ class CodexAuthManager:
         if not self._refresh_token:
             raise ValueError("Codex refresh token is not set")
 
+        # Capture the pre-rotation refresh token so the persistence layer can
+        # locate the matching on-disk entry after the token is rotated below.
+        previous_refresh_token = self._refresh_token
+
         logger.info(
             f"Refreshing Codex token (account={self.chatgpt_account_id or '<unknown>'}, "
             f"token={_mask_token(self._access_token)})..."
@@ -337,7 +352,48 @@ class CodexAuthManager:
             f"expires: {self._expires_at.isoformat()}"
         )
 
+        # Persist the rotated tokens (if a sink is wired). OpenAI invalidates the
+        # previous refresh token on every grant, so the on-disk copy must be
+        # updated or the next process start will fail with refresh_token_reused.
+        self._notify_token_refreshed(previous_refresh_token=previous_refresh_token)
+
+    def _notify_token_refreshed(self, previous_refresh_token: str) -> None:
+        """Invoke the refresh callback with the current token fields, if set.
+
+        Never raises: a broken/persisting callback must not turn a successful
+        token refresh into a failed request. The ``match_refresh_token`` field
+        carries the pre-rotation refresh token so the persistence layer can
+        locate the right entry even when no ChatGPT account id is available.
+
+        Args:
+            previous_refresh_token: The refresh token in effect before this
+                refresh (used only to locate the on-disk entry).
+        """
+        if self._on_token_refreshed is None:
+            return
+        payload: Dict[str, Any] = {
+            "access_token": self._access_token,
+            "refresh_token": self._refresh_token,
+            "id_token": self._id_token,
+            "expires_at": self._expires_at.isoformat() if self._expires_at else None,
+            "chatgpt_account_id": self.chatgpt_account_id,
+            "match_refresh_token": previous_refresh_token,
+        }
+        try:
+            self._on_token_refreshed(payload)
+        except Exception as e:  # noqa: BLE001 - callback is user-supplied; isolate it fully.
+            logger.error(
+                f"Codex token-refresh callback raised "
+                f"(account={self.chatgpt_account_id or '<unknown>'}): "
+                f"{type(e).__name__}: {e}"
+            )
+
     @property
     def access_token(self) -> str:
         """Current in-memory access token (may be stale; prefer get_access_token)."""
         return self._access_token
+
+    @property
+    def refresh_token(self) -> str:
+        """Current in-memory refresh token (rotated on each successful refresh)."""
+        return self._refresh_token

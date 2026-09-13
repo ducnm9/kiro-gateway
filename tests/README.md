@@ -74,9 +74,10 @@ tests/
 ├── unit/                            # Unit tests for individual components
 │   ├── test_account_errors.py      # Account System error classification (FATAL vs RECOVERABLE, incl. Codex classify_error_codex)
 │   ├── test_account_manager.py     # AccountManager tests (failover, Circuit Breaker, sticky, state; multi-provider Codex: filtering, fill-first, round-robin, credential loading, init)
-│   ├── test_auth_codex.py          # CodexAuthManager tests (OAuth refresh, expiry, JWT account-id backfill, thread-safe refresh, token masking)
+│   ├── test_auth_codex.py          # CodexAuthManager tests (OAuth refresh, expiry, JWT account-id backfill, thread-safe refresh, token masking, on_token_refreshed persistence callback)
 │   ├── test_auth_manager.py        # KiroAuthManager tests (including api_region parameter priority)
 │   ├── test_cache.py               # ModelInfoCache tests (is_valid_model, add_hidden_model)
+│   ├── test_codex_credentials_store.py # Codex credentials persistence (rotated-token write-back, account merge, atomic 0600 write, malformed-file handling)
 │   ├── test_config.py              # Configuration tests (SERVER_HOST, SERVER_PORT, LOG_LEVEL, Account System + ChatGPT/Codex constants)
 │   ├── test_converters_anthropic.py # Anthropic Messages API → Kiro converter tests
 │   ├── test_converters_codex.py    # OpenAI/Anthropic → Codex Responses converter tests (input array, instructions, tools, reasoning, allowlist, remote-image inlining)

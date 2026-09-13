@@ -616,20 +616,32 @@ class AccountManager:
 
         try:
             meta = account.account_meta or {}
+
+            # Wire a persistence callback so rotated refresh tokens are written
+            # back to CHATGPT_CREDENTIALS_FILE. OpenAI invalidates the previous
+            # refresh token on every grant; without this, a restart re-reads the
+            # stale token and fails with refresh_token_reused (HTTP 401).
+            from kiro.config import CHATGPT_CREDENTIALS_FILE
+            from kiro.codex_credentials_store import build_persist_callback
+
             auth_manager = CodexAuthManager(
                 access_token=meta.get("accessToken", ""),
                 refresh_token=meta.get("refreshToken", ""),
                 id_token=meta.get("idToken"),
                 chatgpt_account_id=meta.get("chatgptAccountId"),
                 expires_at=meta.get("expiresAt"),
+                on_token_refreshed=build_persist_callback(CHATGPT_CREDENTIALS_FILE),
             )
 
             # Verify credentials work (refreshes if expiring). Raises on failure.
             await auth_manager.get_access_token()
 
-            # Keep the (possibly backfilled) ChatGPT account id in sync so the
-            # request layer can set the ChatGPT-Account-ID header correctly.
+            # Keep in-memory account_meta in sync with any refresh that just
+            # happened, so a later re-init (e.g. after a Circuit Breaker reset)
+            # starts from the rotated tokens rather than the stale originals.
             account.account_meta["chatgptAccountId"] = auth_manager.chatgpt_account_id
+            account.account_meta["accessToken"] = auth_manager.access_token
+            account.account_meta["refreshToken"] = auth_manager.refresh_token
 
             # Build model cache/resolver from the static Codex registry.
             models_list = [{"modelId": m["id"]} for m in CHATGPT_MODELS]
