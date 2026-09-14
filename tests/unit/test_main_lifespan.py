@@ -905,3 +905,197 @@ class TestLifespanAccountManagerInit:
         print(f"Save calls: {len(save_calls)}")
         assert len(save_calls) >= 2
         print("✓ Final state save was performed on shutdown")
+
+
+# =============================================================================
+# Test Class: ChatGPT (Codex) backend wiring in lifespan
+# =============================================================================
+
+class TestLifespanChatGPTBackend:
+    """Tests for attaching the Codex backend to app.state during lifespan."""
+
+    def _mock_manager(self, codex_accounts=0):
+        """Build a mock AccountManager whose _accounts include N codex accounts.
+
+        Codex accounts get an awaitable auth_manager so model discovery (if it
+        runs) can call get_access_token without error.
+        """
+        manager = AsyncMock()
+        accounts = {}
+        # One Kiro account so account-system init succeeds.
+        kiro_acc = MagicMock()
+        kiro_acc.provider = "kiro"
+        accounts["kiro_1"] = kiro_acc
+        for i in range(codex_accounts):
+            cx = MagicMock()
+            cx.provider = "chatgpt"
+            cx.auth_manager = AsyncMock()
+            cx.auth_manager.get_access_token = AsyncMock(return_value="tok")
+            cx.auth_manager.chatgpt_account_id = f"acc_{i}"
+            accounts[f"chatgpt_{i}"] = cx
+        manager._accounts = accounts
+        manager._current_account_index = 0
+        manager._initialize_account = AsyncMock(return_value=True)
+        manager._save_state = AsyncMock()
+        manager.save_state_periodically = AsyncMock()
+        return manager
+
+    @pytest.mark.asyncio
+    async def test_codex_backend_attached_when_enabled(self, tmp_path, monkeypatch):
+        """
+        What it does: With CHATGPT_ENABLED, app.state.codex_backend is a CodexBackend.
+        Purpose: Verify the Codex backend is wired for the route handlers.
+        """
+        monkeypatch.setattr("main.ACCOUNT_SYSTEM", True)
+        monkeypatch.setattr("main.CHATGPT_ENABLED", True)
+        monkeypatch.setattr("main.CHATGPT_MODEL_DISCOVERY", False)  # focus on attachment
+        monkeypatch.setattr("main.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("main.ACCOUNTS_CONFIG_FILE", str(tmp_path / "credentials.json"))
+        monkeypatch.setattr("main.ACCOUNTS_STATE_FILE", str(tmp_path / "state.json"))
+        # Pre-create a credentials.json so migration is skipped.
+        (tmp_path / "credentials.json").write_text(json.dumps([{"type": "refresh_token", "refresh_token": "x"}]))
+
+        manager = self._mock_manager(codex_accounts=2)
+        with patch("main.AccountManager", return_value=manager):
+            with patch("main.httpx.AsyncClient") as mock_client_class:
+                mock_client_class.return_value = AsyncMock()
+                from main import lifespan, app
+                async with lifespan(app):
+                    from kiro.upstream_codex import CodexBackend
+                    assert isinstance(app.state.codex_backend, CodexBackend)
+                    assert app.state.codex_backend.name == "chatgpt"
+
+    @pytest.mark.asyncio
+    async def test_codex_discovery_updates_routing_ids(self, tmp_path, monkeypatch):
+        """
+        What it does: With discovery on, fetch_models runs and config.CHATGPT_MODEL_IDS
+            is updated to the discovered set.
+        Purpose: New/plan models become routable without a restart.
+        """
+        from kiro import config
+        # Guard the global routing set so this test's mutation auto-restores.
+        monkeypatch.setattr("kiro.config.CHATGPT_MODEL_IDS", set(config.CHATGPT_MODEL_IDS))
+        monkeypatch.setattr("main.ACCOUNT_SYSTEM", True)
+        monkeypatch.setattr("main.CHATGPT_ENABLED", True)
+        monkeypatch.setattr("main.CHATGPT_MODEL_DISCOVERY", True)
+        monkeypatch.setattr("main.CHATGPT_MODEL_REFRESH_INTERVAL", 0)  # no background task
+        monkeypatch.setattr("main.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("main.ACCOUNTS_CONFIG_FILE", str(tmp_path / "credentials.json"))
+        monkeypatch.setattr("main.ACCOUNTS_STATE_FILE", str(tmp_path / "state.json"))
+        (tmp_path / "credentials.json").write_text(json.dumps([{"type": "refresh_token", "refresh_token": "x"}]))
+
+        # Stub fetch_models to populate a known model set.
+        async def fake_fetch(self, auth):
+            self.models = [{"id": "gpt-5.6-luna", "name": "Luna"}, {"id": "gpt-5.6-terra", "name": "Terra"}]
+            return self.models
+        monkeypatch.setattr("kiro.upstream_codex.CodexBackend.fetch_models", fake_fetch)
+
+        manager = self._mock_manager(codex_accounts=1)
+        with patch("main.AccountManager", return_value=manager):
+            with patch("main.httpx.AsyncClient") as mock_client_class:
+                mock_client_class.return_value = AsyncMock()
+                from main import lifespan, app
+                async with lifespan(app):
+                    assert config.CHATGPT_MODEL_IDS == {"gpt-5.6-luna", "gpt-5.6-terra"}
+                    assert set(app.state.codex_backend.model_ids()) == {"gpt-5.6-luna", "gpt-5.6-terra"}
+
+    @pytest.mark.asyncio
+    async def test_codex_backend_absent_when_disabled(self, tmp_path, monkeypatch):
+        """
+        What it does: With CHATGPT_ENABLED false, no codex_backend is attached.
+        Purpose: Opt-in; disabled leaves state clean.
+        """
+        monkeypatch.setattr("main.ACCOUNT_SYSTEM", True)
+        monkeypatch.setattr("main.CHATGPT_ENABLED", False)
+        monkeypatch.setattr("main.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("main.ACCOUNTS_CONFIG_FILE", str(tmp_path / "credentials.json"))
+        monkeypatch.setattr("main.ACCOUNTS_STATE_FILE", str(tmp_path / "state.json"))
+        (tmp_path / "credentials.json").write_text(json.dumps([{"type": "refresh_token", "refresh_token": "x"}]))
+
+        manager = self._mock_manager(codex_accounts=0)
+        with patch("main.AccountManager", return_value=manager):
+            with patch("main.httpx.AsyncClient") as mock_client_class:
+                mock_client_class.return_value = AsyncMock()
+                from main import lifespan, app
+                # Ensure a clean slate for this assertion.
+                if hasattr(app.state, "codex_backend"):
+                    delattr(app.state, "codex_backend")
+                async with lifespan(app):
+                    assert getattr(app.state, "codex_backend", None) is None
+
+    @pytest.mark.asyncio
+    async def test_codex_enabled_but_no_accounts_still_attaches_backend(self, tmp_path, monkeypatch):
+        """
+        What it does: Enabled with zero Codex accounts still attaches the backend.
+        Purpose: The backend exposes models; missing accounts is a warning, not a crash.
+        """
+        monkeypatch.setattr("main.ACCOUNT_SYSTEM", True)
+        monkeypatch.setattr("main.CHATGPT_ENABLED", True)
+        monkeypatch.setattr("main.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("main.ACCOUNTS_CONFIG_FILE", str(tmp_path / "credentials.json"))
+        monkeypatch.setattr("main.ACCOUNTS_STATE_FILE", str(tmp_path / "state.json"))
+        (tmp_path / "credentials.json").write_text(json.dumps([{"type": "refresh_token", "refresh_token": "x"}]))
+
+        manager = self._mock_manager(codex_accounts=0)
+        with patch("main.AccountManager", return_value=manager):
+            with patch("main.httpx.AsyncClient") as mock_client_class:
+                mock_client_class.return_value = AsyncMock()
+                from main import lifespan, app
+                async with lifespan(app):
+                    assert app.state.codex_backend is not None
+
+
+# =============================================================================
+# Test Class: validate_configuration() with KIRO_ENABLED
+# =============================================================================
+
+class TestValidateConfigurationKiroEnabled:
+    """Tests for the KIRO_ENABLED handling in main.validate_configuration().
+
+    What it does: Verifies the "at least one upstream" guard and that Kiro
+                  credential checks are skipped when Kiro is disabled.
+    Purpose: Ensure a Command-Code-only / ChatGPT-only gateway validates cleanly,
+             and that a fully-disabled config is rejected with a clear error.
+    """
+
+    def test_no_upstream_enabled_raises(self, monkeypatch):
+        """All upstreams disabled → RuntimeError('No upstream enabled')."""
+        import main
+        monkeypatch.setattr("main.PROXY_API_KEY", "test-key")
+        monkeypatch.setattr("main.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("main.CHATGPT_ENABLED", False)
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+
+        with pytest.raises(RuntimeError, match="No upstream enabled"):
+            main.validate_configuration()
+
+    def test_kiro_disabled_but_chatgpt_enabled_skips_kiro_checks(self, monkeypatch):
+        """Kiro off + ChatGPT on → validation passes without Kiro credentials."""
+        import main
+        monkeypatch.setattr("main.PROXY_API_KEY", "test-key")
+        monkeypatch.setattr("main.COMMAND_CODE_ENABLED", False)
+        monkeypatch.setattr("main.CHATGPT_ENABLED", True)
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+
+        # Should not raise even though no Kiro credentials are configured.
+        main.validate_configuration()
+
+    def test_kiro_disabled_but_command_code_enabled_skips_kiro_checks(self, monkeypatch):
+        """Kiro off + Command Code on → validation passes without Kiro credentials."""
+        import main
+        monkeypatch.setattr("main.PROXY_API_KEY", "test-key")
+        monkeypatch.setattr("main.COMMAND_CODE_ENABLED", True)
+        monkeypatch.setattr("main.CHATGPT_ENABLED", False)
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+
+        main.validate_configuration()
+
+    def test_missing_proxy_api_key_raises_regardless(self, monkeypatch):
+        """Empty PROXY_API_KEY always fails, even with an upstream enabled."""
+        import main
+        monkeypatch.setattr("main.PROXY_API_KEY", "")
+        monkeypatch.setattr("main.COMMAND_CODE_ENABLED", True)
+        monkeypatch.setattr("kiro.config.KIRO_ENABLED", False)
+
+        with pytest.raises(RuntimeError, match="PROXY_API_KEY"):
+            main.validate_configuration()

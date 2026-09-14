@@ -566,6 +566,26 @@ ACCOUNT_CACHE_TTL: int = int(os.getenv("ACCOUNT_CACHE_TTL", "43200"))
 STATE_SAVE_INTERVAL_SECONDS: int = int(os.getenv("STATE_SAVE_INTERVAL_SECONDS", "10"))
 
 # ==================================================================================================
+# Kiro Upstream Settings (Primary Upstream)
+# ==================================================================================================
+
+# Enable Kiro (Amazon Q Developer / AWS CodeWhisperer) as an upstream provider.
+# When enabled (default), the gateway loads Kiro credentials and routes any model
+# not matched by another upstream to Kiro (native passthrough behavior).
+#
+# When disabled, the gateway skips Kiro credential loading entirely and does NOT
+# route unmatched models to Kiro. Requests for models that no enabled upstream
+# can handle receive a clear error instead of being sent to a non-existent Kiro
+# backend. This lets users run a Command-Code-only or ChatGPT-only gateway
+# without any Kiro credentials.
+#
+# Default: true (fully backward compatible - existing deployments are unaffected).
+#
+# IMPORTANT: At least one upstream (Kiro, Command Code, or ChatGPT) must be enabled,
+# otherwise the gateway has nothing to proxy to and will refuse to start.
+KIRO_ENABLED: bool = os.getenv("KIRO_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# ==================================================================================================
 # Command Code Settings (Optional Second Upstream)
 # ==================================================================================================
 
@@ -598,6 +618,124 @@ COMMAND_CODE_MAX_TOKENS_CAP: int = 200000
 COMMAND_CODE_MODEL_REFRESH_INTERVAL: int = int(os.getenv("COMMAND_CODE_MODEL_REFRESH_INTERVAL", "3600"))
 
 # ==================================================================================================
+# ChatGPT (Codex) Settings (Optional Third Upstream)
+# ==================================================================================================
+#
+# Integrates OpenAI ChatGPT via the Codex OAuth backend
+# (https://chatgpt.com/backend-api/codex/responses, OpenAI Responses API format,
+# streaming-only) as an additional upstream with multi-account support.
+#
+# ⚠️  RISK NOTICE: This targets ChatGPT's internal Codex backend using the same
+# OAuth client the official Codex CLI uses. Accessing it outside the official
+# Codex CLI may violate OpenAI's Terms of Service and could put your ChatGPT
+# account at risk of restriction or suspension. This feature is opt-in and
+# DISABLED by default. Use secondary accounts and understand the risk.
+
+# Enable ChatGPT (Codex) as an upstream provider.
+# When disabled (default), the gateway behaves exactly as before (no Codex path).
+CHATGPT_ENABLED: bool = os.getenv("CHATGPT_ENABLED", "false").lower() in ("true", "1", "yes")
+
+# Base URL for the Codex Responses API endpoint.
+CHATGPT_BASE_URL: str = os.getenv(
+    "CHATGPT_BASE_URL", "https://chatgpt.com/backend-api/codex/responses"
+).rstrip("/")
+
+# OAuth client ID used for the Codex token refresh flow (matches the official Codex CLI).
+CHATGPT_OAUTH_CLIENT_ID: str = os.getenv(
+    "CHATGPT_OAUTH_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann"
+)
+
+# OAuth token endpoint used to refresh Codex access tokens.
+CHATGPT_OAUTH_TOKEN_URL: str = os.getenv(
+    "CHATGPT_OAUTH_TOKEN_URL", "https://auth.openai.com/oauth/token"
+)
+
+# OAuth scope requested during token refresh.
+CHATGPT_OAUTH_SCOPE: str = os.getenv(
+    "CHATGPT_OAUTH_SCOPE", "openid profile email offline_access"
+)
+
+# Path to the Codex accounts credentials file (JSON list of account entries).
+# Read directly from .env to avoid Windows path escape-sequence issues.
+_raw_chatgpt_creds = _get_raw_env_value("CHATGPT_CREDENTIALS_FILE") or os.getenv(
+    "CHATGPT_CREDENTIALS_FILE", "chatgpt_credentials.json"
+)
+CHATGPT_CREDENTIALS_FILE: str = str(Path(_raw_chatgpt_creds)) if _raw_chatgpt_creds else "chatgpt_credentials.json"
+
+# Account-selection strategy for Codex accounts.
+#   "fill-first"  : stick to one account until it errors/quota-exhausts, then move on.
+#   "round-robin" : rotate accounts every CHATGPT_STICKY_LIMIT successful requests.
+CHATGPT_STRATEGY: str = os.getenv("CHATGPT_STRATEGY", "fill-first").strip().lower()
+
+# Number of consecutive successful requests to stay on one account before rotating
+# (round-robin strategy only). Ignored for fill-first.
+CHATGPT_STICKY_LIMIT: int = int(os.getenv("CHATGPT_STICKY_LIMIT", "3"))
+
+# Client identity headers sent to the Codex backend (match the official Codex CLI).
+# The client version must be >= 0.145.0 for model discovery to return the full
+# model set (older versions hide newer models like the 5.6 family).
+CHATGPT_ORIGINATOR: str = os.getenv("CHATGPT_ORIGINATOR", "codex_cli_rs")
+CHATGPT_USER_AGENT: str = os.getenv("CHATGPT_USER_AGENT", "codex_cli_rs/0.145.0")
+
+# Client version reported to the Codex model-discovery endpoint. Defaults to the
+# version parsed from CHATGPT_USER_AGENT (the "x.y.z" after the last "/").
+def _parse_client_version(user_agent: str) -> str:
+    """Extract the x.y.z version from a Codex user-agent string."""
+    tail = user_agent.rsplit("/", 1)[-1].strip()
+    return tail or "0.145.0"
+
+CHATGPT_CLIENT_VERSION: str = os.getenv(
+    "CHATGPT_CLIENT_VERSION", _parse_client_version(CHATGPT_USER_AGENT)
+)
+
+# Lead time (seconds) before access-token expiry when a refresh is triggered.
+CHATGPT_TOKEN_REFRESH_THRESHOLD: int = int(os.getenv("CHATGPT_TOKEN_REFRESH_THRESHOLD", "600"))
+
+# ---- Dynamic model discovery ----
+# Codex exposes an authenticated model-list endpoint. When discovery is enabled
+# (default), the gateway fetches the account's available models at startup and
+# periodically, so new models (and plan upgrades to Plus/Pro) appear
+# automatically. When disabled or on failure, it falls back to CHATGPT_MODELS.
+
+# Enable fetching the Codex model list from the API (default: true).
+CHATGPT_MODEL_DISCOVERY: bool = os.getenv(
+    "CHATGPT_MODEL_DISCOVERY", "true"
+).lower() in ("true", "1", "yes")
+
+# Codex model-list endpoint (requires ?client_version=... and OAuth).
+CHATGPT_MODELS_URL: str = os.getenv(
+    "CHATGPT_MODELS_URL", "https://chatgpt.com/backend-api/codex/models"
+)
+
+# Interval (seconds) between automatic Codex model-list refreshes.
+# Default: 3600 (1 hour). Set to 0 to disable periodic refresh (still fetched once at startup).
+CHATGPT_MODEL_REFRESH_INTERVAL: int = int(os.getenv("CHATGPT_MODEL_REFRESH_INTERVAL", "3600"))
+
+# Codex model slugs that are internal/non-chat and must be filtered out of the
+# discovered list (they are not user-callable chat models).
+CHATGPT_MODEL_EXCLUDE: set = {"gpt-reserve", "codex-auto-review"}
+
+# Fallback static registry of Codex models, used only when dynamic discovery is
+# disabled or fails. When CHATGPT_MODEL_DISCOVERY is on (default), the live model
+# set comes from the Codex model-list API instead.
+# Codex model IDs are bare names (no "/"), which is how resolve_upstream tells
+# them apart from Command Code (provider-qualified) and Kiro.
+# Each entry: {"id": <client model id>, "name": <display name>}.
+#
+# NOTE: these IDs were verified to work on a ChatGPT "Go" account; higher plans
+# (Plus/Pro) unlock additional models, which discovery will surface automatically.
+CHATGPT_MODELS: List[Dict[str, str]] = [
+    {"id": "gpt-5.6-luna", "name": "GPT 5.6 Luna"},
+    {"id": "gpt-5.6-terra", "name": "GPT 5.6 Terra"},
+    {"id": "gpt-5.4-mini", "name": "GPT 5.4 Mini"},
+]
+
+# Set of Codex model IDs (derived from CHATGPT_MODELS) for O(1) routing lookup.
+# This is the FALLBACK set; when discovery runs, main.py replaces it at runtime
+# with the discovered ids so resolve_upstream routes newly-available models too.
+CHATGPT_MODEL_IDS: set = {m["id"] for m in CHATGPT_MODELS}
+
+# ==================================================================================================
 # Application Version
 # ==================================================================================================
 
@@ -625,3 +763,30 @@ def get_kiro_q_host(region: str) -> str:
     """Return Q API host for the specified region."""
     return KIRO_Q_HOST_TEMPLATE.format(region=region)
 
+
+
+def get_codex_responses_url() -> str:
+    """Return the Codex Responses API endpoint URL.
+
+    Returns:
+        The configured Codex backend base URL (``CHATGPT_BASE_URL``).
+    """
+    return CHATGPT_BASE_URL
+
+
+def get_codex_refresh_url() -> str:
+    """Return the OAuth token endpoint used to refresh Codex access tokens.
+
+    Returns:
+        The configured Codex OAuth token URL (``CHATGPT_OAUTH_TOKEN_URL``).
+    """
+    return CHATGPT_OAUTH_TOKEN_URL
+
+
+def get_codex_models_url() -> str:
+    """Return the Codex model-list endpoint (without query params).
+
+    Returns:
+        The configured Codex models URL (``CHATGPT_MODELS_URL``).
+    """
+    return CHATGPT_MODELS_URL

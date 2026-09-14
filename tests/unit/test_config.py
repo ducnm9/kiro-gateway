@@ -632,10 +632,12 @@ class TestFallbackModelsIntegration:
         resolver = ModelResolver(cache=cache, hidden_models={})
         
         print("\nAction: Testing normalization with dash format...")
-        # Test that dash format (claude-opus-4-5) is normalized and found
+        # Test that dash format (e.g. claude-opus-4-6) is normalized and found.
+        # Model versions must match the current FALLBACK_MODELS list, otherwise
+        # the resolver falls back to passthrough instead of a cache hit.
         test_cases = [
-            ("claude-opus-4-5", "claude-opus-4.5"),  # Dash → Dot
-            ("claude-sonnet-4-5", "claude-sonnet-4.5"),  # Dash → Dot
+            ("claude-opus-4-6", "claude-opus-4.6"),  # Dash → Dot
+            ("claude-sonnet-4-6", "claude-sonnet-4.6"),  # Dash → Dot
             ("claude-haiku-4-5", "claude-haiku-4.5"),  # Dash → Dot
         ]
         
@@ -969,3 +971,352 @@ class TestAccountSystemConfig:
         
         print(f"Comparing STATE_SAVE_INTERVAL_SECONDS: Expected 10, Got {config_module.STATE_SAVE_INTERVAL_SECONDS}")
         assert config_module.STATE_SAVE_INTERVAL_SECONDS == 10
+
+
+
+# ==================================================================================================
+# Tests for KIRO_ENABLED Configuration
+# ==================================================================================================
+
+class TestKiroEnabledConfig:
+    """Tests for the Kiro upstream enable flag (KIRO_ENABLED)."""
+
+    def _reload(self):
+        """Reload config module and return it."""
+        from importlib import reload
+        import kiro.config as config_module
+        reload(config_module)
+        return config_module
+
+    def test_kiro_enabled_default_true(self, monkeypatch):
+        """
+        What it does: Verifies KIRO_ENABLED defaults to True.
+        Purpose: Full backward compatibility — existing deployments keep Kiro on.
+        """
+        monkeypatch.delenv("KIRO_ENABLED", raising=False)
+
+        config_module = self._reload()
+
+        assert config_module.KIRO_ENABLED is True
+
+    @pytest.mark.parametrize("value,expected", [
+        ("true", True), ("True", True), ("TRUE", True), ("1", True), ("yes", True), ("YES", True),
+        ("false", False), ("False", False), ("0", False), ("no", False), ("", False), ("maybe", False),
+    ])
+    def test_kiro_enabled_parsing(self, monkeypatch, value, expected):
+        """
+        What it does: Verifies KIRO_ENABLED truthy/falsy parsing.
+        Purpose: Only explicit truthy strings keep Kiro on; anything else disables it.
+        """
+        monkeypatch.setenv("KIRO_ENABLED", value)
+
+        config_module = self._reload()
+
+        assert config_module.KIRO_ENABLED is expected
+
+
+# ==================================================================================================
+# Tests for ChatGPT (Codex) Configuration
+# ==================================================================================================
+
+class TestChatGPTConfig:
+    """Tests for ChatGPT (Codex) provider configuration (CHATGPT_*)."""
+
+    def _reload(self):
+        """Reload config module and return it."""
+        from importlib import reload
+        import kiro.config as config_module
+        reload(config_module)
+        return config_module
+
+    def test_chatgpt_enabled_default_false(self, monkeypatch):
+        """
+        What it does: Verifies CHATGPT_ENABLED defaults to False.
+        Purpose: Ensure the Codex path is opt-in and off by default (backward compat).
+        """
+        # Set to empty rather than delete: load_dotenv(override=False) would
+        # otherwise let a real .env (which may enable it locally) leak in and
+        # break isolation. An empty value is parsed as False, matching intent.
+        print("Setup: Forcing CHATGPT_ENABLED empty (isolated from .env)...")
+        monkeypatch.setenv("CHATGPT_ENABLED", "")
+
+        config_module = self._reload()
+
+        print(f"Comparing CHATGPT_ENABLED: Expected False, Got {config_module.CHATGPT_ENABLED}")
+        assert config_module.CHATGPT_ENABLED is False
+
+    @pytest.mark.parametrize("value,expected", [
+        ("true", True), ("True", True), ("1", True), ("yes", True), ("YES", True),
+        ("false", False), ("0", False), ("no", False), ("", False), ("maybe", False),
+    ])
+    def test_chatgpt_enabled_parsing(self, monkeypatch, value, expected):
+        """
+        What it does: Verifies CHATGPT_ENABLED truthy/falsy parsing.
+        Purpose: Ensure only explicit truthy strings enable the feature.
+        """
+        print(f"Setup: Setting CHATGPT_ENABLED={value!r}...")
+        monkeypatch.setenv("CHATGPT_ENABLED", value)
+
+        config_module = self._reload()
+
+        print(f"Comparing: Expected {expected}, Got {config_module.CHATGPT_ENABLED}")
+        assert config_module.CHATGPT_ENABLED is expected
+
+    def test_chatgpt_base_url_default(self, monkeypatch):
+        """
+        What it does: Verifies CHATGPT_BASE_URL default points to the Codex responses endpoint.
+        Purpose: Ensure the correct upstream endpoint is used by default.
+        """
+        print("Setup: Removing CHATGPT_BASE_URL from environment...")
+        monkeypatch.delenv("CHATGPT_BASE_URL", raising=False)
+
+        config_module = self._reload()
+
+        print(f"CHATGPT_BASE_URL: {config_module.CHATGPT_BASE_URL}")
+        assert config_module.CHATGPT_BASE_URL == "https://chatgpt.com/backend-api/codex/responses"
+
+    def test_chatgpt_base_url_strips_trailing_slash(self, monkeypatch):
+        """
+        What it does: Verifies a trailing slash in CHATGPT_BASE_URL is stripped.
+        Purpose: Prevent double-slash URLs when building requests.
+        """
+        print("Setup: Setting CHATGPT_BASE_URL with trailing slash...")
+        monkeypatch.setenv("CHATGPT_BASE_URL", "https://example.test/codex/")
+
+        config_module = self._reload()
+
+        print(f"CHATGPT_BASE_URL: {config_module.CHATGPT_BASE_URL}")
+        assert config_module.CHATGPT_BASE_URL == "https://example.test/codex"
+
+    def test_chatgpt_oauth_defaults(self, monkeypatch):
+        """
+        What it does: Verifies OAuth client id / token url / scope defaults.
+        Purpose: Ensure refresh flow is preconfigured to match the Codex CLI.
+        """
+        print("Setup: Removing CHATGPT_OAUTH_* from environment...")
+        for key in ("CHATGPT_OAUTH_CLIENT_ID", "CHATGPT_OAUTH_TOKEN_URL", "CHATGPT_OAUTH_SCOPE"):
+            monkeypatch.delenv(key, raising=False)
+
+        config_module = self._reload()
+
+        assert config_module.CHATGPT_OAUTH_CLIENT_ID == "app_EMoamEEZ73f0CkXaXp7hrann"
+        assert config_module.CHATGPT_OAUTH_TOKEN_URL == "https://auth.openai.com/oauth/token"
+        assert "offline_access" in config_module.CHATGPT_OAUTH_SCOPE
+
+    def test_chatgpt_credentials_file_default(self, monkeypatch):
+        """
+        What it does: Verifies CHATGPT_CREDENTIALS_FILE default filename.
+        Purpose: Ensure a sane default path for the Codex accounts file.
+        """
+        print("Setup: Removing CHATGPT_CREDENTIALS_FILE from environment...")
+        monkeypatch.delenv("CHATGPT_CREDENTIALS_FILE", raising=False)
+
+        config_module = self._reload()
+
+        print(f"CHATGPT_CREDENTIALS_FILE: {config_module.CHATGPT_CREDENTIALS_FILE}")
+        assert "chatgpt_credentials.json" in config_module.CHATGPT_CREDENTIALS_FILE
+
+    def test_chatgpt_strategy_default_fill_first(self, monkeypatch):
+        """
+        What it does: Verifies CHATGPT_STRATEGY defaults to fill-first.
+        Purpose: Ensure default behavior is drain-one-then-next.
+        """
+        print("Setup: Removing CHATGPT_STRATEGY from environment...")
+        monkeypatch.delenv("CHATGPT_STRATEGY", raising=False)
+
+        config_module = self._reload()
+
+        print(f"CHATGPT_STRATEGY: {config_module.CHATGPT_STRATEGY}")
+        assert config_module.CHATGPT_STRATEGY == "fill-first"
+
+    def test_chatgpt_strategy_normalized(self, monkeypatch):
+        """
+        What it does: Verifies CHATGPT_STRATEGY is lowercased/stripped.
+        Purpose: Ensure "Round-Robin" and " round-robin " normalize correctly.
+        """
+        print("Setup: Setting CHATGPT_STRATEGY=' Round-Robin '...")
+        monkeypatch.setenv("CHATGPT_STRATEGY", " Round-Robin ")
+
+        config_module = self._reload()
+
+        print(f"CHATGPT_STRATEGY: {config_module.CHATGPT_STRATEGY}")
+        assert config_module.CHATGPT_STRATEGY == "round-robin"
+
+    def test_chatgpt_sticky_limit_default(self, monkeypatch):
+        """
+        What it does: Verifies CHATGPT_STICKY_LIMIT defaults to 3.
+        Purpose: Ensure round-robin rotates after 3 requests by default.
+        """
+        print("Setup: Removing CHATGPT_STICKY_LIMIT from environment...")
+        monkeypatch.delenv("CHATGPT_STICKY_LIMIT", raising=False)
+
+        config_module = self._reload()
+
+        print(f"CHATGPT_STICKY_LIMIT: {config_module.CHATGPT_STICKY_LIMIT}")
+        assert config_module.CHATGPT_STICKY_LIMIT == 3
+        assert isinstance(config_module.CHATGPT_STICKY_LIMIT, int)
+
+    def test_chatgpt_sticky_limit_from_env(self, monkeypatch):
+        """
+        What it does: Verifies CHATGPT_STICKY_LIMIT reads an integer from env.
+        Purpose: Ensure operators can tune rotation cadence.
+        """
+        print("Setup: Setting CHATGPT_STICKY_LIMIT=1...")
+        monkeypatch.setenv("CHATGPT_STICKY_LIMIT", "1")
+
+        config_module = self._reload()
+
+        print(f"CHATGPT_STICKY_LIMIT: {config_module.CHATGPT_STICKY_LIMIT}")
+        assert config_module.CHATGPT_STICKY_LIMIT == 1
+
+    def test_chatgpt_identity_headers_default(self, monkeypatch):
+        """
+        What it does: Verifies default originator / user-agent headers.
+        Purpose: Ensure requests match the Codex CLI identity.
+        """
+        print("Setup: Removing CHATGPT_ORIGINATOR/CHATGPT_USER_AGENT...")
+        monkeypatch.delenv("CHATGPT_ORIGINATOR", raising=False)
+        monkeypatch.delenv("CHATGPT_USER_AGENT", raising=False)
+
+        config_module = self._reload()
+
+        assert config_module.CHATGPT_ORIGINATOR == "codex_cli_rs"
+        assert config_module.CHATGPT_USER_AGENT.startswith("codex_cli_rs/")
+
+    def test_chatgpt_models_structure(self, monkeypatch):
+        """
+        What it does: Verifies CHATGPT_MODELS is a non-empty list of {id,name} dicts.
+        Purpose: Ensure the static registry is usable by routing and /v1/models.
+        """
+        config_module = self._reload()
+
+        print(f"CHATGPT_MODELS length: {len(config_module.CHATGPT_MODELS)}")
+        assert isinstance(config_module.CHATGPT_MODELS, list)
+        assert len(config_module.CHATGPT_MODELS) > 0
+        for m in config_module.CHATGPT_MODELS:
+            assert isinstance(m, dict)
+            assert m.get("id")
+            assert m.get("name")
+
+    def test_chatgpt_model_ids_matches_registry(self, monkeypatch):
+        """
+        What it does: Verifies CHATGPT_MODEL_IDS equals the set of registry ids.
+        Purpose: Ensure the O(1) routing lookup set stays in sync with CHATGPT_MODELS.
+        """
+        config_module = self._reload()
+
+        expected = {m["id"] for m in config_module.CHATGPT_MODELS}
+        print(f"CHATGPT_MODEL_IDS: {config_module.CHATGPT_MODEL_IDS}")
+        assert config_module.CHATGPT_MODEL_IDS == expected
+        # Codex model ids are bare names (no "/") to avoid Command Code conflict.
+        assert all("/" not in mid for mid in config_module.CHATGPT_MODEL_IDS)
+
+    def test_get_codex_responses_url(self):
+        """
+        What it does: Verifies get_codex_responses_url returns the base URL.
+        Purpose: Ensure the helper exposes the configured endpoint.
+        """
+        config_module = self._reload()
+        from kiro.config import get_codex_responses_url
+
+        url = get_codex_responses_url()
+        print(f"get_codex_responses_url(): {url}")
+        assert url == config_module.CHATGPT_BASE_URL
+
+    def test_get_codex_refresh_url(self):
+        """
+        What it does: Verifies get_codex_refresh_url returns the OAuth token URL.
+        Purpose: Ensure the helper exposes the refresh endpoint.
+        """
+        config_module = self._reload()
+        from kiro.config import get_codex_refresh_url
+
+        url = get_codex_refresh_url()
+        print(f"get_codex_refresh_url(): {url}")
+        assert url == config_module.CHATGPT_OAUTH_TOKEN_URL
+
+    def test_model_discovery_default_true(self, monkeypatch):
+        """
+        What it does: CHATGPT_MODEL_DISCOVERY defaults to True.
+        Purpose: Discovery is on by default so new models appear automatically.
+        """
+        monkeypatch.delenv("CHATGPT_MODEL_DISCOVERY", raising=False)
+        config_module = self._reload()
+        assert config_module.CHATGPT_MODEL_DISCOVERY is True
+
+    def test_model_discovery_can_disable(self, monkeypatch):
+        """
+        What it does: CHATGPT_MODEL_DISCOVERY=false disables discovery.
+        Purpose: Allow pinning to the static fallback list.
+        """
+        monkeypatch.setenv("CHATGPT_MODEL_DISCOVERY", "false")
+        config_module = self._reload()
+        assert config_module.CHATGPT_MODEL_DISCOVERY is False
+
+    def test_models_url_default(self, monkeypatch):
+        """
+        What it does: CHATGPT_MODELS_URL default points at the Codex models endpoint.
+        Purpose: Correct discovery endpoint.
+        """
+        monkeypatch.delenv("CHATGPT_MODELS_URL", raising=False)
+        config_module = self._reload()
+        assert config_module.CHATGPT_MODELS_URL.endswith("/codex/models")
+
+    def test_client_version_derived_from_user_agent(self, monkeypatch):
+        """
+        What it does: CHATGPT_CLIENT_VERSION defaults to the version in the user-agent.
+        Purpose: Keep the discovery client_version in sync with the UA.
+        """
+        monkeypatch.delenv("CHATGPT_CLIENT_VERSION", raising=False)
+        monkeypatch.setenv("CHATGPT_USER_AGENT", "codex_cli_rs/0.150.1")
+        config_module = self._reload()
+        assert config_module.CHATGPT_CLIENT_VERSION == "0.150.1"
+
+    def test_client_version_explicit_override(self, monkeypatch):
+        """
+        What it does: CHATGPT_CLIENT_VERSION env overrides the derived value.
+        Purpose: Allow pinning the discovery client_version independently.
+        """
+        monkeypatch.setenv("CHATGPT_USER_AGENT", "codex_cli_rs/0.145.0")
+        monkeypatch.setenv("CHATGPT_CLIENT_VERSION", "0.200.0")
+        config_module = self._reload()
+        assert config_module.CHATGPT_CLIENT_VERSION == "0.200.0"
+
+    def test_default_client_version_supports_discovery(self, monkeypatch):
+        """
+        What it does: The default client version is >= 0.145.0.
+        Purpose: Older versions hide newer models; ensure the default sees them.
+        """
+        monkeypatch.delenv("CHATGPT_USER_AGENT", raising=False)
+        monkeypatch.delenv("CHATGPT_CLIENT_VERSION", raising=False)
+        config_module = self._reload()
+        # Compare as version tuples.
+        parts = tuple(int(x) for x in config_module.CHATGPT_CLIENT_VERSION.split("."))
+        assert parts >= (0, 145, 0)
+
+    def test_model_refresh_interval_default(self, monkeypatch):
+        """
+        What it does: CHATGPT_MODEL_REFRESH_INTERVAL defaults to 3600.
+        Purpose: Sensible periodic refresh cadence.
+        """
+        monkeypatch.delenv("CHATGPT_MODEL_REFRESH_INTERVAL", raising=False)
+        config_module = self._reload()
+        assert config_module.CHATGPT_MODEL_REFRESH_INTERVAL == 3600
+
+    def test_model_exclude_contains_internal_slugs(self, monkeypatch):
+        """
+        What it does: CHATGPT_MODEL_EXCLUDE lists internal, non-chat slugs.
+        Purpose: Ensure discovery filters out gpt-reserve / codex-auto-review.
+        """
+        config_module = self._reload()
+        assert "gpt-reserve" in config_module.CHATGPT_MODEL_EXCLUDE
+        assert "codex-auto-review" in config_module.CHATGPT_MODEL_EXCLUDE
+
+    def test_get_codex_models_url(self):
+        """
+        What it does: get_codex_models_url returns the models endpoint.
+        Purpose: Ensure the helper exposes the discovery URL.
+        """
+        config_module = self._reload()
+        from kiro.config import get_codex_models_url
+        assert get_codex_models_url() == config_module.CHATGPT_MODELS_URL

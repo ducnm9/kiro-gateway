@@ -78,12 +78,18 @@ from kiro.config import (
     ACCOUNT_SYSTEM,
     ACCOUNTS_CONFIG_FILE,
     ACCOUNTS_STATE_FILE,
+    KIRO_ENABLED,
     COMMAND_CODE_ENABLED,
     COMMAND_CODE_API_KEY,
+    CHATGPT_ENABLED,
+    CHATGPT_MODEL_DISCOVERY,
+    CHATGPT_MODEL_REFRESH_INTERVAL,
     COMMAND_CODE_MODEL_REFRESH_INTERVAL,
     _warn_timeout_configuration,
 )
+from kiro import config
 from kiro.upstream_cc import CommandCodeBackend
+from kiro.upstream_codex import CodexBackend
 from kiro.auth import KiroAuthManager
 from kiro.cache import ModelInfoCache
 from kiro.model_resolver import ModelResolver
@@ -241,10 +247,35 @@ def validate_configuration() -> None:
         logger.error("=" * 60)
         logger.error("")
         raise RuntimeError("PROXY_API_KEY is not configured")
-    
+
+    # Guard: at least one upstream must be enabled, otherwise the gateway has
+    # nothing to proxy to. Kiro is on by default, so this only trips when a user
+    # explicitly disables Kiro without enabling Command Code or ChatGPT.
+    from kiro.config import ACCOUNTS_CONFIG_FILE, KIRO_ENABLED
+    if not (KIRO_ENABLED or COMMAND_CODE_ENABLED or CHATGPT_ENABLED):
+        logger.error("")
+        logger.error("=" * 60)
+        logger.error("  CONFIGURATION ERROR: No upstream enabled!")
+        logger.error("=" * 60)
+        logger.error("  At least one upstream provider must be enabled.")
+        logger.error("  Enable one of the following in your .env file:")
+        logger.error("")
+        logger.error('    KIRO_ENABLED="true"           # Amazon Q / CodeWhisperer')
+        logger.error('    COMMAND_CODE_ENABLED="true"    # Command Code')
+        logger.error('    CHATGPT_ENABLED="true"         # ChatGPT (Codex)')
+        logger.error("=" * 60)
+        logger.error("")
+        raise RuntimeError("No upstream enabled")
+
+    # When the Kiro upstream is disabled, no Kiro credentials are required.
+    # The other upstreams validate their own configuration at startup, so we
+    # skip the Kiro-centric credential checks entirely.
+    if not KIRO_ENABLED:
+        logger.debug("KIRO_ENABLED is false; skipping Kiro credential validation")
+        return
+
     # Priority 1: Check if credentials.json exists (Account System)
     # If it exists, legacy .env validation is skipped
-    from kiro.config import ACCOUNTS_CONFIG_FILE
     creds_json_path = Path(ACCOUNTS_CONFIG_FILE)
     
     if creds_json_path.exists():
@@ -402,7 +433,12 @@ async def lifespan(app: FastAPI):
         if api_region:
             entry["api_region"] = api_region
     
-    if ACCOUNT_SYSTEM:
+    # The .env → credentials.json migration only produces Kiro credential entries.
+    # Skip it entirely when the Kiro upstream is disabled so a Command-Code-only
+    # or ChatGPT-only deployment never fabricates a Kiro credentials.json.
+    if not KIRO_ENABLED:
+        logger.info("KIRO_ENABLED is false; skipping .env → credentials.json migration")
+    elif ACCOUNT_SYSTEM:
         # Account system enabled: create credentials.json ONCE (migration)
         if not creds_path.exists():
             if has_refresh_token or has_creds_file or has_cli_db:
@@ -493,35 +529,46 @@ async def lifespan(app: FastAPI):
     # Initialize first working account (blocking)
     # ==============================================================================
     all_accounts = list(app.state.account_manager._accounts.keys())
-    
+
+    # A gateway with only a key-based upstream (Command Code) and no account-based
+    # upstream (Kiro / ChatGPT) legitimately has zero accounts. Only Command Code
+    # can run account-less, so we allow an empty account set only when it is the
+    # sole enabled upstream.
+    has_account_upstream = KIRO_ENABLED or CHATGPT_ENABLED
     if not all_accounts:
-        logger.error("No accounts configured in credentials.json")
-        raise RuntimeError("No accounts configured in credentials.json")
-    
-    # Determine start index from state.json
-    start_index = app.state.account_manager._current_account_index
-    
-    # Try to initialize accounts (full circle)
-    initialized = False
-    
-    for i in range(len(all_accounts)):
-        current_index = (start_index + i) % len(all_accounts)
-        account_id = all_accounts[current_index]
-        
-        logger.info(f"Attempting to initialize account: {account_id}")
-        
-        success = await app.state.account_manager._initialize_account(account_id)
-        
-        if success:
-            logger.info(f"Successfully initialized account: {account_id}")
-            initialized = True
-            break
-        else:
-            logger.warning(f"Failed to initialize account: {account_id}")
-    
-    if not initialized:
-        logger.error("Failed to initialize any account. Check your credentials.")
-        raise RuntimeError("Failed to initialize any account")
+        if has_account_upstream:
+            logger.error("No accounts configured for the enabled account-based upstream(s)")
+            raise RuntimeError("No accounts configured in credentials.json")
+        if COMMAND_CODE_ENABLED:
+            logger.info(
+                "No accounts configured; running with Command Code as the only upstream"
+            )
+        # Skip the account-init loop entirely (nothing to initialize).
+    else:
+        # Determine start index from state.json
+        start_index = app.state.account_manager._current_account_index
+
+        # Try to initialize accounts (full circle)
+        initialized = False
+
+        for i in range(len(all_accounts)):
+            current_index = (start_index + i) % len(all_accounts)
+            account_id = all_accounts[current_index]
+
+            logger.info(f"Attempting to initialize account: {account_id}")
+
+            success = await app.state.account_manager._initialize_account(account_id)
+
+            if success:
+                logger.info(f"Successfully initialized account: {account_id}")
+                initialized = True
+                break
+            else:
+                logger.warning(f"Failed to initialize account: {account_id}")
+
+        if not initialized:
+            logger.error("Failed to initialize any account. Check your credentials.")
+            raise RuntimeError("Failed to initialize any account")
     
     # Save initial state
     await app.state.account_manager._save_state()
@@ -559,7 +606,63 @@ async def lifespan(app: FastAPI):
             )
     elif COMMAND_CODE_ENABLED:
         logger.warning("COMMAND_CODE_ENABLED is true but COMMAND_CODE_API_KEY is empty; Command Code disabled")
-    
+
+    # ==============================================================================
+    # Initialize ChatGPT (Codex) backend (optional third upstream)
+    # ==============================================================================
+    # Codex accounts are loaded by the Account System (load_credentials →
+    # _load_codex_credentials) from CHATGPT_CREDENTIALS_FILE. Here we only attach
+    # the backend (URL + header builder + static model registry) used by the
+    # route handlers. The static model list needs no periodic refresh.
+    codex_refresh_task = None
+    if CHATGPT_ENABLED:
+        codex_backend = CodexBackend()
+        app.state.codex_backend = codex_backend
+
+        # Find a Codex account to authenticate model discovery.
+        codex_account_ids = [
+            aid for aid, acc in app.state.account_manager._accounts.items()
+            if acc.provider == "chatgpt"
+        ]
+        logger.info(
+            f"ChatGPT (Codex) backend initialized with {len(codex_backend.models)} "
+            f"fallback models and {len(codex_account_ids)} account(s)"
+        )
+        if not codex_account_ids:
+            logger.warning(
+                "CHATGPT_ENABLED is true but no Codex accounts were loaded; "
+                "check CHATGPT_CREDENTIALS_FILE"
+            )
+        elif CHATGPT_MODEL_DISCOVERY:
+            # Initialize the first Codex account, then discover its live model set.
+            first_id = codex_account_ids[0]
+            if await app.state.account_manager._initialize_account(first_id):
+                auth = app.state.account_manager._accounts[first_id].auth_manager
+                await codex_backend.fetch_models(auth)
+                # Publish the discovered ids so resolve_upstream routes them.
+                config.CHATGPT_MODEL_IDS = codex_backend.model_ids()
+                logger.info(
+                    f"ChatGPT (Codex) routing models: {sorted(config.CHATGPT_MODEL_IDS)}"
+                )
+                # Periodic refresh so new models / plan upgrades appear automatically.
+                if CHATGPT_MODEL_REFRESH_INTERVAL > 0:
+                    async def _codex_refresh_loop():
+                        while True:
+                            await asyncio.sleep(CHATGPT_MODEL_REFRESH_INTERVAL)
+                            try:
+                                await codex_backend.fetch_models(auth)
+                                config.CHATGPT_MODEL_IDS = codex_backend.model_ids()
+                            except Exception as e:  # noqa: BLE001
+                                logger.warning(f"Codex model refresh failed: {type(e).__name__}")
+                    codex_refresh_task = asyncio.create_task(_codex_refresh_loop())
+                    logger.info(
+                        f"ChatGPT (Codex) model refresh scheduled every "
+                        f"{CHATGPT_MODEL_REFRESH_INTERVAL}s"
+                    )
+            else:
+                logger.warning("Failed to initialize a Codex account for model discovery; "
+                               "using static fallback model list")
+
     yield
     
     # Graceful shutdown
@@ -577,6 +680,14 @@ async def lifespan(app: FastAPI):
         cc_refresh_task.cancel()
         try:
             await cc_refresh_task
+        except asyncio.CancelledError:
+            pass
+
+    # Cancel ChatGPT (Codex) model refresh task
+    if codex_refresh_task:
+        codex_refresh_task.cancel()
+        try:
+            await codex_refresh_task
         except asyncio.CancelledError:
             pass
     

@@ -65,6 +65,7 @@ _Use Claude models from Kiro with Claude Code, OpenCode, OpenClaw, Claw Code, Co
 | 📋 **Extended model list**      | Including versioned models                     |
 | 🔐 **Smart token management**   | Automatic refresh before expiration            |
 | 🔀 **Command Code**             | Optional second upstream provider              |
+| 🤖 **ChatGPT / Codex**          | Optional third upstream, multi-account (opt-in)|
 
 ---
 
@@ -560,6 +561,118 @@ Model names containing `/` route to Command Code; bare names route to Kiro.
 
 Command Code models appear in `/v1/models` and auto-refresh on the configured
 interval.
+
+---
+
+## 🤖 ChatGPT / Codex (Third Upstream, Multi-Account)
+
+Kiro Gateway can also proxy to **ChatGPT** via the **Codex** OAuth backend
+(`chatgpt.com/backend-api/codex/responses`, OpenAI Responses API, streaming-only)
+as an optional third upstream, with **multi-account support** so you can pool the
+quota of several ChatGPT accounts.
+
+> ⚠️ **RISK NOTICE.** This targets ChatGPT's **internal** Codex backend using the
+> same OAuth client the official Codex CLI uses. Accessing it outside the official
+> Codex CLI may violate OpenAI's Terms of Service and could put your ChatGPT
+> account at risk of **restriction or suspension**. The feature is **opt-in and
+> disabled by default**. Prefer secondary accounts and understand the risk before
+> enabling. Note that lower ChatGPT tiers (e.g. "Go") may not have Codex access at
+> all — verify with a test request after connecting.
+
+### Enable it
+
+```bash
+# .env
+CHATGPT_ENABLED=true
+CHATGPT_CREDENTIALS_FILE=chatgpt_credentials.json
+# Optional: rotate between accounts instead of draining one first
+CHATGPT_STRATEGY=round-robin      # default: fill-first
+CHATGPT_STICKY_LIMIT=3            # round-robin: requests per account before rotating
+```
+
+### Provide account tokens
+
+Create `chatgpt_credentials.json` — a JSON list of accounts (see
+`chatgpt_credentials.json.example`). Each account needs an `accessToken` and a
+`refreshToken`; the `chatgptAccountId` is used for the per-account
+`ChatGPT-Account-ID` binding (auto-backfilled from the token JWT if omitted).
+Obtain these tokens via the official Codex OAuth login (external tool) — the
+gateway consumes existing tokens and refreshes them automatically, but does not
+run the browser login flow itself.
+
+```json
+[
+  { "provider": "chatgpt", "accessToken": "...", "refreshToken": "...", "chatgptAccountId": "acc_1" },
+  { "provider": "chatgpt", "accessToken": "...", "refreshToken": "...", "chatgptAccountId": "acc_2" }
+]
+```
+
+#### Import helper
+
+Instead of copying tokens by hand, use the importer to read the token file left
+by a ChatGPT login in **Codex CLI** (`~/.codex/auth.json`) or **OpenCode**
+(`~/.local/share/opencode/auth.json`) and append an account to
+`chatgpt_credentials.json`:
+
+```bash
+# Auto-detect the source; run once per logged-in account
+python scripts/import_codex_auth.py --label acc1
+
+# Or point at a specific file / preview without writing
+python scripts/import_codex_auth.py --source ~/.codex/auth.json --dry-run
+```
+
+Tokens stay on your machine; the file is written with owner-only permissions
+(0600). Re-running for the same account updates it in place.
+
+### How routing and multi-account work
+
+- Requests for a **Codex model id** (bare names such as `gpt-5.6-luna`) route to
+  ChatGPT; everything else is unchanged.
+- **fill-first** (default): use one account until it errors or hits its quota
+  (429 `usage_limit_reached`), then automatically fail over to the next account.
+- **round-robin**: rotate accounts every `CHATGPT_STICKY_LIMIT` successful
+  requests to spread the load.
+- Quota exhaustion, capacity, and transient upstream errors trigger failover; a
+  malformed request (400/422) is returned immediately. OAuth tokens refresh
+  automatically on 401/403.
+
+### Model discovery (and Plus/Pro)
+
+Codex has no public model-list contract, so the gateway **discovers** the
+account's available models from the Codex model API at startup and on a timer,
+then routes and lists exactly those. This means new models — and models unlocked
+by upgrading **Go → Plus/Pro** — appear automatically, no config change needed.
+
+- Discovery is **on by default** (`CHATGPT_MODEL_DISCOVERY=true`) and uses the
+  first configured Codex account to authenticate the lookup.
+- The client version reported to the API must be **≥ 0.145.0** (default) or newer
+  models are hidden. Set via `CHATGPT_USER_AGENT` / `CHATGPT_CLIENT_VERSION`.
+- If discovery is disabled or fails, the gateway falls back to the static
+  `CHATGPT_MODELS` list in `config.py`.
+- **Plan caveat:** the discovered list is what your plan *lists*, which is not
+  always what it can *call*. On a **ChatGPT Go** account, `gpt-5.6-luna`,
+  `gpt-5.6-terra`, and `gpt-5.4-mini` are callable; some listed models (e.g.
+  `gpt-5.5`) return `model_not_found` until you're on a higher plan. The gateway
+  surfaces the upstream error as-is rather than hiding the model.
+
+### Options
+
+| Env var                        | Default                                             | Description                                    |
+| ------------------------------ | --------------------------------------------------- | ---------------------------------------------- |
+| `CHATGPT_ENABLED`              | `false`                                             | Enable the ChatGPT (Codex) upstream            |
+| `CHATGPT_CREDENTIALS_FILE`     | `chatgpt_credentials.json`                          | JSON list of Codex account tokens              |
+| `CHATGPT_STRATEGY`             | `fill-first`                                        | `fill-first` or `round-robin`                  |
+| `CHATGPT_STICKY_LIMIT`         | `3`                                                 | Requests per account before rotating (RR only) |
+| `CHATGPT_MODEL_DISCOVERY`      | `true`                                              | Fetch the live model set from the Codex API    |
+| `CHATGPT_MODEL_REFRESH_INTERVAL` | `3600`                                            | Model-list refresh interval (sec); 0 = once    |
+| `CHATGPT_USER_AGENT`           | `codex_cli_rs/0.145.0`                              | Codex client identity (version ≥ 0.145.0)      |
+| `CHATGPT_BASE_URL`             | `https://chatgpt.com/backend-api/codex/responses`   | Codex Responses endpoint                       |
+| `CHATGPT_OAUTH_TOKEN_URL`      | `https://auth.openai.com/oauth/token`               | OAuth token refresh endpoint                   |
+
+Codex models appear in `/v1/models` with `owned_by: openai`. Works on both the
+OpenAI (`/v1/chat/completions`) and Anthropic (`/v1/messages`) surfaces, in
+streaming and non-streaming modes.
 
 ---
 
