@@ -469,31 +469,36 @@ class TestParseKiroStream:
     @pytest.mark.asyncio
     async def test_handles_empty_response(self, mock_response):
         """
-        What it does: Handles empty response gracefully.
-        Goal: Verify no events yielded for empty response.
+        What it does: Raises FirstTokenTimeoutError when Kiro returns HTTP 200
+                      with an empty stream body (StopAsyncIteration on the first
+                      byte read).
+        Goal: Verify empty HTTP 200 responses are treated as retriable errors
+              rather than silently returning nothing (regression guard for the
+              empty-stream fix).
         """
-        print("Setup: Mock empty response...")
-        
+        print("Setup: Mock empty response that exhausts immediately...")
+
         async def mock_aiter_bytes():
             return
-            yield  # Make it a generator
-        
+            yield  # Make it an async generator
+
         mock_response.aiter_bytes = mock_aiter_bytes
-        
-        # Mock wait_for to raise StopAsyncIteration (empty response)
+
+        # Patch wait_for so it re-raises StopAsyncIteration, simulating an
+        # exhausted byte iterator on the very first read attempt.
         async def mock_wait_for_empty(*args, **kwargs):
             raise StopAsyncIteration()
-        
-        print("Action: Parsing empty stream...")
-        events = []
-        
+
+        print("Action: Parsing empty stream — should raise FirstTokenTimeoutError...")
+
         with patch('kiro.streaming_core.asyncio.wait_for', side_effect=mock_wait_for_empty):
-            async for event in parse_kiro_stream(mock_response, first_token_timeout=30):
-                events.append(event)
-        
-        print(f"Received {len(events)} events")
-        assert len(events) == 0
-        print("✓ Empty response handled correctly")
+            with pytest.raises(FirstTokenTimeoutError) as exc_info:
+                async for _ in parse_kiro_stream(mock_response, first_token_timeout=30):
+                    pass
+
+        print(f"Exception: {exc_info.value}")
+        assert "empty" in str(exc_info.value).lower() or "no data" in str(exc_info.value).lower()
+        print("✓ Empty stream correctly raises FirstTokenTimeoutError (retriable)")
     
     @pytest.mark.asyncio
     async def test_handles_generator_exit(self, mock_response, mock_parser):
@@ -1832,3 +1837,123 @@ class TestStreamWithFirstTokenRetryCore:
         assert make_request_call_count == 1
         assert len(chunks) == 1
         print("✓ make_request called immediately when initial_response is None")
+
+
+# ==================================================================================================
+# Tests for Fix: Empty stream raises FirstTokenTimeoutError
+# ==================================================================================================
+
+class TestEmptyStreamRaisesFirstTokenTimeout:
+    """
+    Tests that parse_kiro_stream() raises FirstTokenTimeoutError on an empty
+    stream body (HTTP 200 but no data), so the retry loop can retry the request
+    instead of silently returning nothing.
+    """
+
+    @pytest.mark.asyncio
+    async def test_empty_stream_raises_first_token_timeout_error(self):
+        """
+        What it does: Raises FirstTokenTimeoutError when Kiro returns an empty
+                      stream body (StopAsyncIteration on the very first byte).
+        Goal: Ensure empty HTTP 200 responses are retriable, not silently swallowed.
+        """
+        print("Setup: Mock response whose byte iterator is immediately exhausted...")
+        response = AsyncMock()
+        response.status_code = 200
+
+        async def empty_byte_iterator():
+            return
+            yield  # make it an async generator
+
+        response.aiter_bytes = empty_byte_iterator
+
+        print("Action: Calling parse_kiro_stream() on an empty stream...")
+        with pytest.raises(FirstTokenTimeoutError) as exc_info:
+            async for _ in parse_kiro_stream(response, first_token_timeout=5.0):
+                pass
+
+        print(f"Exception message: {exc_info.value}")
+        assert "empty" in str(exc_info.value).lower() or "no data" in str(exc_info.value).lower()
+        print("✓ Empty stream correctly raises FirstTokenTimeoutError")
+
+    @pytest.mark.asyncio
+    async def test_empty_stream_error_message_is_descriptive(self):
+        """
+        What it does: Checks that the FirstTokenTimeoutError from an empty stream
+                      includes a human-readable message distinguishing it from a
+                      regular timeout.
+        Goal: Verify the error message helps with debugging.
+        """
+        print("Setup: Mock empty-stream response...")
+        response = AsyncMock()
+
+        async def empty_byte_iterator():
+            return
+            yield
+
+        response.aiter_bytes = empty_byte_iterator
+
+        print("Action: Collecting exception message...")
+        with pytest.raises(FirstTokenTimeoutError) as exc_info:
+            async for _ in parse_kiro_stream(response, first_token_timeout=5.0):
+                pass
+
+        message = str(exc_info.value)
+        print(f"Error message: {message}")
+        # Message must be non-empty and mention the empty-stream condition.
+        assert message, "Error message should not be empty"
+        assert "empty" in message.lower() or "no data" in message.lower()
+        print("✓ Error message is descriptive for empty-stream case")
+
+    @pytest.mark.asyncio
+    async def test_normal_timeout_still_raises_first_token_timeout_error(self):
+        """
+        What it does: Verifies the original asyncio.TimeoutError path still raises
+                      FirstTokenTimeoutError (regression guard after the empty-stream fix).
+        Goal: Ensure existing timeout behaviour is not broken.
+        """
+        print("Setup: Mock response whose first byte never arrives...")
+        response = AsyncMock()
+
+        async def slow_byte_iterator():
+            await asyncio.sleep(999)
+            yield b"too late"
+
+        response.aiter_bytes = slow_byte_iterator
+
+        print("Action: Calling parse_kiro_stream() with a very short timeout...")
+        with pytest.raises(FirstTokenTimeoutError) as exc_info:
+            async for _ in parse_kiro_stream(response, first_token_timeout=0.05):
+                pass
+
+        print(f"Exception message: {exc_info.value}")
+        assert exc_info.value is not None
+        print("✓ Slow response still raises FirstTokenTimeoutError via asyncio.TimeoutError path")
+
+    @pytest.mark.asyncio
+    async def test_non_empty_stream_does_not_raise(self):
+        """
+        What it does: Verifies that a stream with actual data does NOT raise
+                      FirstTokenTimeoutError (regression guard).
+        Goal: Ensure the empty-stream fix does not affect normal responses.
+        """
+        print("Setup: Mock response with actual bytes...")
+        response = AsyncMock()
+
+        # Minimal valid AWS event stream chunk that produces no decoded events
+        # (just a few bytes so the iterator yields something)
+        async def normal_byte_iterator():
+            yield b"\x00\x00\x00\x00"  # Minimal chunk; parser will skip it gracefully
+
+        response.aiter_bytes = normal_byte_iterator
+
+        print("Action: Iterating parse_kiro_stream() — should not raise...")
+        events = []
+        try:
+            async for event in parse_kiro_stream(response, first_token_timeout=2.0):
+                events.append(event)
+        except FirstTokenTimeoutError:
+            pytest.fail("parse_kiro_stream raised FirstTokenTimeoutError on a non-empty stream")
+
+        print(f"Received {len(events)} events (may be 0 if chunk is ignored by parser)")
+        print("✓ Non-empty stream does not raise FirstTokenTimeoutError")

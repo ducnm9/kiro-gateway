@@ -52,7 +52,12 @@ from kiro.auth import KiroAuthManager, AuthType
 from kiro.cache import ModelInfoCache
 from kiro.model_resolver import ModelResolver
 from kiro.converters_openai import build_kiro_payload
-from kiro.streaming_openai import stream_kiro_to_openai, collect_stream_response, stream_with_first_token_retry
+from kiro.streaming_openai import (
+    stream_kiro_to_openai,
+    collect_stream_response,
+    collect_stream_response_with_retry,
+    stream_with_first_token_retry,
+)
 from kiro.http_client import KiroHttpClient
 from kiro.utils import generate_conversation_id
 from kiro.config import WEB_SEARCH_ENABLED
@@ -732,13 +737,20 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                         return StreamingResponse(stream_wrapper(), media_type="text/event-stream")
                     
                     else:
-                        # Non-streaming mode
-                        openai_response = await collect_stream_response(
-                            http_client.client,
-                            response,
-                            request_data.model,
-                            model_cache,
-                            auth_manager,
+                        # Non-streaming mode — use retry wrapper so first-token
+                        # timeouts and empty-stream responses are retried.
+                        async def make_retry_request_non_stream():
+                            return await http_client.request_with_retry(
+                                "POST", url, kiro_payload, stream=True
+                            )
+
+                        openai_response = await collect_stream_response_with_retry(
+                            make_request=make_retry_request_non_stream,
+                            client=http_client.client,
+                            model=request_data.model,
+                            model_cache=model_cache,
+                            auth_manager=auth_manager,
+                            initial_response=response,
                             request_messages=messages_for_tokenizer,
                             request_tools=tools_for_tokenizer
                         )
@@ -1034,13 +1046,20 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
         
         else:
             
-            # Non-streaming mode - collect entire response
-            openai_response = await collect_stream_response(
-                http_client.client,
-                response,
-                request_data.model,
-                model_cache,
-                auth_manager,
+            # Non-streaming mode — use retry wrapper so first-token timeouts
+            # and empty-stream responses trigger a new attempt automatically.
+            async def make_retry_request_legacy():
+                return await http_client.request_with_retry(
+                    "POST", url, kiro_payload, stream=True
+                )
+
+            openai_response = await collect_stream_response_with_retry(
+                make_request=make_retry_request_legacy,
+                client=http_client.client,
+                model=request_data.model,
+                model_cache=model_cache,
+                auth_manager=auth_manager,
+                initial_response=response,
                 request_messages=messages_for_tokenizer,
                 request_tools=tools_for_tokenizer
             )

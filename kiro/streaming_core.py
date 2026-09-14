@@ -163,9 +163,12 @@ async def parse_kiro_stream(
             logger.warning(f"[FirstTokenTimeout] Model did not respond within {first_token_timeout}s")
             raise FirstTokenTimeoutError(f"No response within {first_token_timeout} seconds")
         except StopAsyncIteration:
-            # Empty response - this is normal, just finish
-            logger.debug("Empty response from Kiro API")
-            return
+            # Empty stream received from Kiro API (HTTP 200 but no body).
+            # This is NOT normal - it means the model never produced output.
+            # Treat it the same as a first-token timeout so the retry loop
+            # can make a new attempt instead of silently returning nothing.
+            logger.warning("[EmptyStream] Kiro API returned HTTP 200 with an empty stream body")
+            raise FirstTokenTimeoutError("Empty response body from Kiro API (HTTP 200 with no data)")
         
         # Process first chunk
         if debug_logger:

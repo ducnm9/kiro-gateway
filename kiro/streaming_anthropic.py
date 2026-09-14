@@ -947,3 +947,179 @@ async def stream_with_first_token_retry_anthropic(
         on_all_retries_failed=create_timeout_error,
     ):
         yield chunk
+
+
+async def collect_anthropic_response_with_retry(
+    make_request,
+    model: str,
+    model_cache: "ModelInfoCache",
+    auth_manager: "KiroAuthManager",
+    initial_response: Optional[httpx.Response] = None,
+    max_retries: int = FIRST_TOKEN_MAX_RETRIES,
+    first_token_timeout: float = FIRST_TOKEN_TIMEOUT,
+    request_messages: Optional[list] = None,
+    request_tools: Optional[list] = None,
+    request_system: Optional[Any] = None,
+) -> dict:
+    """
+    Collect full non-streaming Anthropic response with automatic retry on first
+    token timeout.
+
+    Non-streaming mode previously had no retry: a ``FirstTokenTimeoutError``
+    (or empty stream) would surface immediately as an error instead of
+    triggering a new attempt.  This wrapper applies the same retry logic as
+    ``stream_with_first_token_retry_anthropic`` so both streaming and
+    non-streaming paths behave consistently.
+
+    Args:
+        make_request: Async callable (no arguments) that opens a fresh HTTP
+                      request to Kiro and returns the ``httpx.Response``.
+                      Invoked on every retry attempt after the first.
+        model: Model name to embed in the assembled response.
+        model_cache: Model cache for token limit look-ups.
+        auth_manager: Authentication manager.
+        initial_response: Pre-validated HTTP 200 response to reuse on the
+                          first attempt, avoiding a redundant HTTP round-trip
+                          when the caller already holds an open response.
+        max_retries: Maximum number of attempts before raising an error.
+        first_token_timeout: Seconds to wait for the first byte from the model.
+        request_messages: Original request messages for fallback token counting.
+        request_tools: Original request tools for fallback token counting.
+        request_system: Original system prompt for fallback token counting.
+
+    Returns:
+        Dictionary with full response in Anthropic Messages format.
+
+    Raises:
+        Exception: With Anthropic-format JSON after exhausting all attempts, or
+                   on non-200 HTTP responses from the upstream.
+
+    Example:
+        >>> async def make_req():
+        ...     return await http_client.request_with_retry("POST", url, payload, stream=True)
+        >>> response = await make_req()
+        >>> result = await collect_anthropic_response_with_retry(
+        ...     make_req, model, cache, auth, initial_response=response
+        ... )
+    """
+    last_error: Optional[Exception] = None
+
+    for attempt in range(max_retries):
+        response: Optional[httpx.Response] = None
+        try:
+            if attempt > 0:
+                logger.warning(
+                    f"[NonStreamRetry/Anthropic] Attempt {attempt + 1}/{max_retries} "
+                    f"after first token timeout (non-streaming)"
+                )
+
+            # Reuse the caller-supplied response on the first attempt; open a
+            # new connection on subsequent attempts.
+            if attempt == 0 and initial_response is not None:
+                response = initial_response
+                logger.debug(
+                    "Reusing initial response for first non-streaming Anthropic attempt"
+                )
+            else:
+                response = await make_request()
+
+            if response.status_code != 200:
+                # Non-200: surface the upstream error immediately — these are
+                # API-level rejections, not transient timeouts.
+                try:
+                    error_content = await response.aread()
+                    error_text = error_content.decode("utf-8", errors="replace")
+                except Exception:
+                    error_text = "Unknown error"
+
+                try:
+                    await response.aclose()
+                except Exception:
+                    pass
+
+                logger.error(
+                    f"[NonStreaming/Anthropic] Upstream API error: "
+                    f"{response.status_code} - {error_text}"
+                )
+                raise Exception(
+                    json.dumps({
+                        "type": "error",
+                        "error": {
+                            "type": "api_error",
+                            "message": f"Upstream API error: {error_text}",
+                        },
+                    })
+                )
+
+            # Attempt to collect the full response.  collect_anthropic_response()
+            # calls collect_stream_to_result() → parse_kiro_stream(), which raises
+            # FirstTokenTimeoutError when no first byte arrives within the timeout
+            # window (including the new empty-stream case).
+            result = await collect_anthropic_response(
+                response,
+                model,
+                model_cache,
+                auth_manager,
+                request_messages=request_messages,
+                request_tools=request_tools,
+                request_system=request_system,
+            )
+            return result
+
+        except FirstTokenTimeoutError as e:
+            last_error = e
+            logger.warning(
+                f"[NonStreamRetry/Anthropic] Attempt {attempt + 1}/{max_retries} "
+                f"timed out after {first_token_timeout}s — no first token received"
+            )
+
+            if response is not None:
+                try:
+                    await response.aclose()
+                except Exception:
+                    pass
+
+            # Continue to the next attempt.
+            continue
+
+        except Exception as e:
+            # Check whether this is the Anthropic-format API-error we raised
+            # above (non-200 upstream) — propagate those immediately without retry.
+            error_msg = str(e) if str(e) else "(empty message)"
+            try:
+                parsed = json.loads(error_msg)
+                if isinstance(parsed, dict) and parsed.get("type") == "error":
+                    raise
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+            # All other unexpected errors (network, parsing, etc.) — no retry.
+            logger.error(
+                "Unexpected error during non-streaming Anthropic collection: {}",
+                error_msg,
+                exc_info=True,
+            )
+            if response is not None:
+                try:
+                    await response.aclose()
+                except Exception:
+                    pass
+            raise
+
+    # All attempts exhausted.
+    logger.error(
+        f"[NonStreamRetry/Anthropic] All {max_retries} attempts exhausted — "
+        f"model never responded within {first_token_timeout}s per attempt"
+    )
+    raise Exception(
+        json.dumps({
+            "type": "error",
+            "error": {
+                "type": "timeout_error",
+                "message": (
+                    f"Model did not respond within {first_token_timeout}s "
+                    f"after {max_retries} attempts. Please try again."
+                ),
+            },
+        })
+    )

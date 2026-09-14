@@ -66,7 +66,13 @@ except ImportError:
 
 
 # Re-export FirstTokenTimeoutError for backward compatibility
-__all__ = ['FirstTokenTimeoutError', 'stream_kiro_to_openai', 'stream_with_first_token_retry', 'collect_stream_response']
+__all__ = [
+    'FirstTokenTimeoutError',
+    'stream_kiro_to_openai',
+    'stream_with_first_token_retry',
+    'collect_stream_response',
+    'collect_stream_response_with_retry',
+]
 
 
 async def stream_kiro_to_openai_internal(
@@ -686,3 +692,159 @@ async def collect_stream_response(
         }],
         "usage": usage
     }
+
+
+async def collect_stream_response_with_retry(
+    make_request: Callable[[], Awaitable[httpx.Response]],
+    client: httpx.AsyncClient,
+    model: str,
+    model_cache: "ModelInfoCache",
+    auth_manager: "KiroAuthManager",
+    initial_response: Optional[httpx.Response] = None,
+    max_retries: int = FIRST_TOKEN_MAX_RETRIES,
+    first_token_timeout: float = FIRST_TOKEN_TIMEOUT,
+    request_messages: Optional[list] = None,
+    request_tools: Optional[list] = None,
+) -> dict:
+    """
+    Collect full non-streaming response with automatic retry on first token timeout.
+
+    Non-streaming mode was previously missing retry logic: if the model did not
+    produce a first token within ``first_token_timeout`` seconds, the call would
+    fail immediately with no retry.  This wrapper applies the same retry
+    semantics as ``stream_with_first_token_retry`` so both modes behave
+    consistently.
+
+    Args:
+        make_request: Async callable that opens a fresh HTTP request to Kiro
+                      and returns the ``httpx.Response``.  Called on every
+                      retry attempt after the first.
+        client: The ``httpx.AsyncClient`` used for the current request context.
+        model: Model name to include in the assembled response.
+        model_cache: Model cache for token limit look-ups.
+        auth_manager: Authentication manager.
+        initial_response: Pre-validated HTTP 200 response to use on the first
+                          attempt.  Avoids re-doing the HTTP round-trip when
+                          the caller already has an open response.
+        max_retries: Maximum number of attempts before raising an error.
+        first_token_timeout: Seconds to wait for the first byte from the model
+                             before treating the attempt as timed-out.
+        request_messages: Original request messages for fallback token counting.
+        request_tools: Original request tools for fallback token counting.
+
+    Returns:
+        Dictionary with full response in OpenAI ``chat.completion`` format.
+
+    Raises:
+        HTTPException: 504 after exhausting all retry attempts, or on
+                       non-200 HTTP responses from the upstream.
+
+    Example:
+        >>> async def make_req():
+        ...     return await http_client.request_with_retry("POST", url, payload, stream=True)
+        >>> response = await make_req()
+        >>> result = await collect_stream_response_with_retry(
+        ...     make_req, client, model, cache, auth, initial_response=response
+        ... )
+    """
+    last_error: Optional[Exception] = None
+
+    for attempt in range(max_retries):
+        response: Optional[httpx.Response] = None
+        try:
+            if attempt > 0:
+                logger.warning(
+                    f"[NonStreamRetry] Attempt {attempt + 1}/{max_retries} "
+                    f"after first token timeout (non-streaming)"
+                )
+
+            # Reuse the initial response on the first attempt to avoid an
+            # extra HTTP round-trip; call make_request() on subsequent attempts.
+            if attempt == 0 and initial_response is not None:
+                response = initial_response
+                logger.debug("Reusing initial response for first non-streaming attempt")
+            else:
+                response = await make_request()
+
+            if response.status_code != 200:
+                # Non-200: read the body and raise immediately (no retry for
+                # API-level errors — only first-token timeouts are retried).
+                try:
+                    error_content = await response.aread()
+                    error_text = error_content.decode("utf-8", errors="replace")
+                except Exception:
+                    error_text = "Unknown error"
+
+                try:
+                    await response.aclose()
+                except Exception:
+                    pass
+
+                logger.error(
+                    f"[NonStreaming] Upstream API error: {response.status_code} - {error_text}"
+                )
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Upstream API error: {error_text}",
+                )
+
+            # Attempt to collect the full response.  This calls
+            # parse_kiro_stream() internally which raises FirstTokenTimeoutError
+            # when neither a first byte nor an empty-stream signal arrives within
+            # first_token_timeout seconds.
+            result = await collect_stream_response(
+                client,
+                response,
+                model,
+                model_cache,
+                auth_manager,
+                request_messages=request_messages,
+                request_tools=request_tools,
+            )
+            return result
+
+        except HTTPException:
+            # Propagate HTTP-level errors (non-200 upstream) immediately.
+            raise
+
+        except FirstTokenTimeoutError as e:
+            last_error = e
+            logger.warning(
+                f"[NonStreamRetry] Attempt {attempt + 1}/{max_retries} timed out "
+                f"after {first_token_timeout}s — no first token received"
+            )
+
+            if response is not None:
+                try:
+                    await response.aclose()
+                except Exception:
+                    pass
+
+            # Continue to the next attempt.
+            continue
+
+        except Exception as e:
+            # Unexpected errors (network, parsing, etc.) — no retry.
+            error_msg = str(e) if str(e) else "(empty message)"
+            logger.error(
+                "Unexpected error during non-streaming collection: {}", error_msg, exc_info=True
+            )
+            if response is not None:
+                try:
+                    await response.aclose()
+                except Exception:
+                    pass
+            raise
+
+    # All attempts exhausted.
+    logger.error(
+        f"[NonStreamRetry] All {max_retries} attempts exhausted — "
+        f"model never responded within {first_token_timeout}s per attempt"
+    )
+    raise HTTPException(
+        status_code=504,
+        detail=(
+            f"Model did not respond within {first_token_timeout}s "
+            f"after {max_retries} attempts. Please try again."
+        ),
+    )

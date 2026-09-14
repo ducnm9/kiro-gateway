@@ -49,6 +49,7 @@ from kiro.converters_anthropic import anthropic_to_kiro
 from kiro.streaming_anthropic import (
     stream_kiro_to_anthropic,
     collect_anthropic_response,
+    collect_anthropic_response_with_retry,
     stream_with_first_token_retry_anthropic,
 )
 from kiro.http_client import KiroHttpClient
@@ -732,12 +733,19 @@ async def messages(
                         )
                     
                     else:
-                        # Non-streaming mode
-                        anthropic_response = await collect_anthropic_response(
-                            response,
-                            request_data.model,
-                            model_cache,
-                            auth_manager,
+                        # Non-streaming mode — use retry wrapper so first-token
+                        # timeouts and empty-stream responses are retried.
+                        async def make_retry_request_non_stream():
+                            return await http_client.request_with_retry(
+                                "POST", url, kiro_payload, stream=True
+                            )
+
+                        anthropic_response = await collect_anthropic_response_with_retry(
+                            make_request=make_retry_request_non_stream,
+                            model=request_data.model,
+                            model_cache=model_cache,
+                            auth_manager=auth_manager,
+                            initial_response=response,
                             request_messages=messages_for_tokenizer,
                             request_tools=tools_for_tokenizer,
                             request_system=system_for_tokenizer,
@@ -1091,12 +1099,19 @@ async def messages(
             )
         
         else:
-            # Non-streaming mode - collect entire response
-            anthropic_response = await collect_anthropic_response(
-                response,
-                request_data.model,
-                model_cache,
-                auth_manager,
+            # Non-streaming mode — use retry wrapper so first-token timeouts
+            # and empty-stream responses trigger a new attempt automatically.
+            async def make_retry_request_legacy():
+                return await http_client.request_with_retry(
+                    "POST", url, kiro_payload, stream=True
+                )
+
+            anthropic_response = await collect_anthropic_response_with_retry(
+                make_request=make_retry_request_legacy,
+                model=request_data.model,
+                model_cache=model_cache,
+                auth_manager=auth_manager,
+                initial_response=response,
                 request_messages=messages_for_tokenizer,
                 request_tools=tools_for_tokenizer,
                 request_system=system_for_tokenizer,

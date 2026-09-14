@@ -1667,3 +1667,314 @@ class TestStreamingAnthropicTruncationDetection:
         # Should detect truncation and set max_tokens
         assert result["stop_reason"] == "max_tokens"
         print("✓ collect_anthropic_response detects truncation correctly")
+
+
+# ==================================================================================================
+# Tests for collect_anthropic_response_with_retry()
+# ==================================================================================================
+
+import json as _json
+from kiro.streaming_anthropic import collect_anthropic_response_with_retry
+from kiro.streaming_core import FirstTokenTimeoutError
+
+
+class TestCollectAnthropicResponseWithRetrySuccess:
+    """Tests for successful paths in collect_anthropic_response_with_retry()."""
+
+    @pytest.mark.asyncio
+    async def test_returns_result_on_first_attempt_using_initial_response(
+        self, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Returns collected result immediately when first attempt
+                      succeeds using the provided initial_response.
+        Goal: Verify the happy path and that initial_response is reused.
+        """
+        print("Setup: Mock collect_anthropic_response to return a valid result...")
+        expected_result = {
+            "id": "msg_abc",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hello"}],
+            "model": "claude-sonnet-4",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+
+        make_request_call_count = 0
+
+        async def make_request():
+            nonlocal make_request_call_count
+            make_request_call_count += 1
+            return mock_response
+
+        with patch(
+            "kiro.streaming_anthropic.collect_anthropic_response",
+            new=AsyncMock(return_value=expected_result),
+        ):
+            result = await collect_anthropic_response_with_retry(
+                make_request=make_request,
+                model="claude-sonnet-4",
+                model_cache=mock_model_cache,
+                auth_manager=mock_auth_manager,
+                initial_response=mock_response,
+                max_retries=3,
+                first_token_timeout=5.0,
+            )
+
+        print(f"make_request call count: {make_request_call_count}")
+        assert make_request_call_count == 0
+        assert result == expected_result
+        print("✓ Returns result on first attempt; initial_response reused without extra HTTP call")
+
+    @pytest.mark.asyncio
+    async def test_makes_new_request_when_no_initial_response(
+        self, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Calls make_request() once when no initial_response is given.
+        Goal: Verify make_request is invoked when initial_response is None.
+        """
+        print("Setup: No initial_response provided...")
+        expected_result = {"id": "msg_def", "type": "message", "content": []}
+        call_count = 0
+
+        async def make_request():
+            nonlocal call_count
+            call_count += 1
+            return mock_response
+
+        with patch(
+            "kiro.streaming_anthropic.collect_anthropic_response",
+            new=AsyncMock(return_value=expected_result),
+        ):
+            result = await collect_anthropic_response_with_retry(
+                make_request=make_request,
+                model="claude-sonnet-4",
+                model_cache=mock_model_cache,
+                auth_manager=mock_auth_manager,
+                initial_response=None,
+                max_retries=3,
+                first_token_timeout=5.0,
+            )
+
+        assert call_count == 1
+        assert result == expected_result
+        print("✓ make_request called exactly once when initial_response is None")
+
+
+class TestCollectAnthropicResponseWithRetryRetry:
+    """Tests for retry behaviour in collect_anthropic_response_with_retry()."""
+
+    @pytest.mark.asyncio
+    async def test_retries_on_first_token_timeout_and_succeeds(
+        self, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Retries after FirstTokenTimeoutError and returns result
+                      on the second attempt.
+        Goal: Verify retry logic works end-to-end for Anthropic non-streaming mode.
+        """
+        print("Setup: First attempt raises FirstTokenTimeoutError; second succeeds...")
+        expected_result = {"id": "msg_retry", "type": "message", "content": []}
+        attempt_count = 0
+
+        async def flaky_collect(*args, **kwargs):
+            nonlocal attempt_count
+            attempt_count += 1
+            if attempt_count == 1:
+                print(f"Attempt {attempt_count}: raising FirstTokenTimeoutError")
+                raise FirstTokenTimeoutError("No response within 5.0 seconds")
+            print(f"Attempt {attempt_count}: returning result")
+            return expected_result
+
+        async def make_request():
+            return mock_response
+
+        with patch("kiro.streaming_anthropic.collect_anthropic_response", new=flaky_collect):
+            result = await collect_anthropic_response_with_retry(
+                make_request=make_request,
+                model="claude-sonnet-4",
+                model_cache=mock_model_cache,
+                auth_manager=mock_auth_manager,
+                initial_response=mock_response,
+                max_retries=3,
+                first_token_timeout=5.0,
+            )
+
+        print(f"Total attempts: {attempt_count}")
+        assert attempt_count == 2
+        assert result == expected_result
+        print("✓ Retried once after FirstTokenTimeoutError and returned Anthropic result")
+
+    @pytest.mark.asyncio
+    async def test_raises_anthropic_timeout_error_after_all_retries_exhausted(
+        self, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Raises an Anthropic-format timeout_error after all retry
+                      attempts are exhausted by repeated FirstTokenTimeoutErrors.
+        Goal: Verify correct Anthropic error format is returned to client when all
+              retries fail.
+        """
+        print("Setup: All attempts raise FirstTokenTimeoutError...")
+        attempt_count = 0
+
+        async def always_timeout(*args, **kwargs):
+            nonlocal attempt_count
+            attempt_count += 1
+            raise FirstTokenTimeoutError("No response within 5.0 seconds")
+
+        async def make_request():
+            return mock_response
+
+        with patch("kiro.streaming_anthropic.collect_anthropic_response", new=always_timeout):
+            with pytest.raises(Exception) as exc_info:
+                await collect_anthropic_response_with_retry(
+                    make_request=make_request,
+                    model="claude-sonnet-4",
+                    model_cache=mock_model_cache,
+                    auth_manager=mock_auth_manager,
+                    initial_response=mock_response,
+                    max_retries=3,
+                    first_token_timeout=5.0,
+                )
+
+        print(f"Total attempts: {attempt_count}")
+        assert attempt_count == 3
+
+        # The exception must carry Anthropic-format JSON.
+        error_body = _json.loads(str(exc_info.value))
+        print(f"Error body: {error_body}")
+        assert error_body["type"] == "error"
+        assert error_body["error"]["type"] == "timeout_error"
+        assert "5.0" in error_body["error"]["message"]
+        print("✓ Anthropic timeout_error raised after all 3 retries exhausted")
+
+    @pytest.mark.asyncio
+    async def test_make_request_called_on_retry_attempts(
+        self, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Verifies that make_request() is called for attempts after
+                      the first (initial_response is only reused once).
+        Goal: Ensure fresh HTTP connections are opened on retries.
+        """
+        print("Setup: Two timeouts then success, initial_response provided...")
+        attempt_count = 0
+        make_request_count = 0
+
+        async def flaky_collect(*args, **kwargs):
+            nonlocal attempt_count
+            attempt_count += 1
+            if attempt_count <= 2:
+                raise FirstTokenTimeoutError("No response within 5.0 seconds")
+            return {"id": "ok", "type": "message", "content": []}
+
+        async def make_request():
+            nonlocal make_request_count
+            make_request_count += 1
+            return mock_response
+
+        with patch("kiro.streaming_anthropic.collect_anthropic_response", new=flaky_collect):
+            await collect_anthropic_response_with_retry(
+                make_request=make_request,
+                model="claude-sonnet-4",
+                model_cache=mock_model_cache,
+                auth_manager=mock_auth_manager,
+                initial_response=mock_response,
+                max_retries=3,
+                first_token_timeout=5.0,
+            )
+
+        print(f"Collect attempts: {attempt_count}, make_request calls: {make_request_count}")
+        assert attempt_count == 3
+        assert make_request_count == 2
+        print("✓ make_request called for retry attempts 2 and 3, not for attempt 1")
+
+
+class TestCollectAnthropicResponseWithRetryErrors:
+    """Tests for error-handling paths in collect_anthropic_response_with_retry()."""
+
+    @pytest.mark.asyncio
+    async def test_raises_anthropic_api_error_on_non_200_response(
+        self, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Raises an Anthropic-format api_error when the upstream
+                      returns a non-200 status code (no retry for API-level errors).
+        Goal: Verify non-200 errors bypass the retry loop and use Anthropic format.
+        """
+        print("Setup: Mock response with status 400...")
+        error_response = AsyncMock()
+        error_response.status_code = 400
+        error_response.aread = AsyncMock(return_value=b'{"message": "Bad request"}')
+        error_response.aclose = AsyncMock()
+
+        async def make_request():
+            return error_response
+
+        collect_called = 0
+
+        async def collect_sentinel(*args, **kwargs):
+            nonlocal collect_called
+            collect_called += 1
+            return {}
+
+        with patch("kiro.streaming_anthropic.collect_anthropic_response", new=collect_sentinel):
+            with pytest.raises(Exception) as exc_info:
+                await collect_anthropic_response_with_retry(
+                    make_request=make_request,
+                    model="claude-sonnet-4",
+                    model_cache=mock_model_cache,
+                    auth_manager=mock_auth_manager,
+                    initial_response=None,
+                    max_retries=3,
+                    first_token_timeout=5.0,
+                )
+
+        print(f"collect_called: {collect_called}, error: {exc_info.value}")
+        assert collect_called == 0
+
+        # Must be Anthropic-format JSON.
+        error_body = _json.loads(str(exc_info.value))
+        assert error_body["type"] == "error"
+        assert error_body["error"]["type"] == "api_error"
+        print("✓ Anthropic api_error raised immediately for non-200; collect not called")
+
+    @pytest.mark.asyncio
+    async def test_does_not_retry_on_unexpected_exception(
+        self, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Propagates unexpected exceptions (not FirstTokenTimeoutError)
+                      without retrying.
+        Goal: Ensure only first-token timeouts trigger retries; other errors surface
+              immediately.
+        """
+        print("Setup: collect_anthropic_response raises a generic ValueError...")
+        attempt_count = 0
+
+        async def boom(*args, **kwargs):
+            nonlocal attempt_count
+            attempt_count += 1
+            raise ValueError("Unexpected stream parsing failure")
+
+        async def make_request():
+            return mock_response
+
+        with patch("kiro.streaming_anthropic.collect_anthropic_response", new=boom):
+            with pytest.raises(ValueError, match="Unexpected stream parsing failure"):
+                await collect_anthropic_response_with_retry(
+                    make_request=make_request,
+                    model="claude-sonnet-4",
+                    model_cache=mock_model_cache,
+                    auth_manager=mock_auth_manager,
+                    initial_response=mock_response,
+                    max_retries=3,
+                    first_token_timeout=5.0,
+                )
+
+        print(f"Attempt count: {attempt_count}")
+        assert attempt_count == 1
+        print("✓ Unexpected exception propagated immediately without retry")
