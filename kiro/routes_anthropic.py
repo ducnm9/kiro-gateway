@@ -60,6 +60,12 @@ from kiro.upstream_base import resolve_upstream
 from kiro.converters_cc import build_cc_payload_anthropic
 from kiro.streaming_cc import collect_cc_anthropic_response, stream_cc_to_anthropic
 from kiro.upstream_cc import raise_cc_http_error
+from kiro.converters_antigravity import build_antigravity_payload_anthropic
+from kiro.streaming_antigravity import (
+    collect_antigravity_anthropic_response,
+    stream_antigravity_to_anthropic,
+)
+from kiro.upstream_antigravity import raise_antigravity_http_error
 from kiro.network_errors import classify_network_error
 
 # Import debug_logger
@@ -121,6 +127,120 @@ async def verify_anthropic_api_key(
 
 # --- Router ---
 router = APIRouter(tags=["Anthropic API"])
+
+
+async def _handle_antigravity_completion_anthropic(
+    request: Request,
+    request_data: AnthropicMessagesRequest,
+) -> Response:
+    """Handle a /v1/messages request routed to the Antigravity upstream.
+
+    Antigravity is streaming-only (streamGenerateContent). Both streaming and
+    non-streaming client modes send a streaming request upstream; non-streaming
+    collects the full response before returning.
+
+    Args:
+        request: FastAPI Request for accessing app.state.
+        request_data: Anthropic Messages request.
+
+    Returns:
+        JSONResponse (non-streaming) or StreamingResponse (streaming).
+
+    Raises:
+        HTTPException: On misconfiguration (503) or upstream errors.
+    """
+    ag_backend = getattr(request.app.state, "antigravity_backend", None)
+    if ag_backend is None:
+        raise HTTPException(status_code=503, detail="Antigravity not configured")
+
+    # Get valid token (auto-refreshes if needed).
+    token = await ag_backend.get_valid_token()
+
+    # Strip "antigravity/" prefix to get the public model ID.
+    raw_model = request_data.model
+    public_model = raw_model.removeprefix("antigravity/")
+
+    # Determine thinking effort.
+    thinking_effort = "off"
+
+    # Resolve to runtime model ID.
+    runtime_model = ag_backend.resolve_runtime_model(public_model, thinking_effort)
+    project_id = ag_backend.credentials.project_id
+
+    # Build the request payload.
+    use_legacy = ag_backend.uses_legacy_parameters(runtime_model)
+    payload = build_antigravity_payload_anthropic(
+        request_data,
+        runtime_model=runtime_model,
+        project_id=project_id,
+        thinking_effort=thinking_effort,
+        use_legacy_parameters=use_legacy,
+    )
+
+    # Build headers.
+    headers = ag_backend.build_headers(token)
+    if ag_backend.needs_thinking_header(runtime_model):
+        headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
+
+    if request_data.stream:
+        timeout = httpx.Timeout(connect=30.0, read=STREAMING_READ_TIMEOUT, write=30.0, pool=30.0)
+
+        async def ag_stream_wrapper() -> AsyncGenerator[str, None]:
+            last_error: Optional[Exception] = None
+            for endpoint in ag_backend.endpoint_candidates():
+                url = ag_backend.get_stream_url(endpoint)
+                async with httpx.AsyncClient(timeout=timeout) as stream_client:
+                    try:
+                        req = stream_client.build_request(
+                            "POST", url, headers=headers, json=payload
+                        )
+                        response = await stream_client.send(req, stream=True)
+                    except httpx.HTTPError as e:
+                        last_error = e
+                        continue
+
+                    if response.status_code != 200:
+                        if response.status_code in (403, 404, 500, 502, 503, 504):
+                            await response.aclose()
+                            continue
+                        await raise_antigravity_http_error(response)
+
+                    async for chunk in stream_antigravity_to_anthropic(response, raw_model):
+                        yield chunk
+                    return
+
+            if last_error:
+                info = classify_network_error(last_error)
+                raise HTTPException(status_code=502, detail=info.user_message)
+            raise HTTPException(status_code=502, detail="All Antigravity endpoints failed")
+
+        return StreamingResponse(
+            ag_stream_wrapper(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+
+    # Non-streaming: use the shared client, try endpoints.
+    client = request.app.state.http_client
+    for endpoint in ag_backend.endpoint_candidates():
+        url = ag_backend.get_stream_url(endpoint)
+        try:
+            req = client.build_request("POST", url, headers=headers, json=payload)
+            response = await client.send(req, stream=True)
+        except httpx.HTTPError:
+            continue
+
+        if response.status_code != 200:
+            if response.status_code in (403, 404, 500, 502, 503, 504):
+                await response.aclose()
+                continue
+            await raise_antigravity_http_error(response)
+
+        result = await collect_antigravity_anthropic_response(response, raw_model)
+        await response.aclose()
+        return JSONResponse(content=result)
+
+    raise HTTPException(status_code=502, detail="All Antigravity endpoints failed")
 
 
 async def _handle_command_code_completion_anthropic(
@@ -225,6 +345,10 @@ async def messages(
     # Command Code upstream routing (before any Kiro-specific processing)
     if resolve_upstream(request_data.model) == "command_code":
         return await _handle_command_code_completion_anthropic(request, request_data)
+
+    # Antigravity upstream routing (before any Kiro-specific processing)
+    if resolve_upstream(request_data.model) == "antigravity":
+        return await _handle_antigravity_completion_anthropic(request, request_data)
     
     # Check for truncation recovery opportunities
     from kiro.truncation_state import get_tool_truncation, get_content_truncation

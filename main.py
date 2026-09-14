@@ -81,15 +81,20 @@ from kiro.config import (
     COMMAND_CODE_ENABLED,
     COMMAND_CODE_API_KEY,
     COMMAND_CODE_MODEL_REFRESH_INTERVAL,
+    ANTIGRAVITY_ENABLED,
+    ANTIGRAVITY_REFRESH_TOKEN,
+    ANTIGRAVITY_MODEL_REFRESH_INTERVAL,
     _warn_timeout_configuration,
 )
 from kiro.upstream_cc import CommandCodeBackend
+from kiro.upstream_antigravity import AntigravityBackend
 from kiro.auth import KiroAuthManager
 from kiro.cache import ModelInfoCache
 from kiro.model_resolver import ModelResolver
 from kiro.account_manager import AccountManager
 from kiro.routes_openai import router as openai_router
 from kiro.routes_anthropic import router as anthropic_router
+from kiro.routes_antigravity import router as antigravity_router
 from kiro.exceptions import validation_exception_handler
 from kiro.debug_middleware import DebugLoggerMiddleware
 from kiro.rate_limiter import RateLimitMiddleware
@@ -560,6 +565,31 @@ async def lifespan(app: FastAPI):
     elif COMMAND_CODE_ENABLED:
         logger.warning("COMMAND_CODE_ENABLED is true but COMMAND_CODE_API_KEY is empty; Command Code disabled")
     
+    # ==============================================================================
+    # Initialize Antigravity backend (optional third upstream)
+    # ==============================================================================
+    ag_refresh_task = None
+    if ANTIGRAVITY_ENABLED:
+        ag_backend = AntigravityBackend()
+        try:
+            await ag_backend.initialize(app.state.http_client)
+            logger.info(f"Antigravity backend initialized with {len(ag_backend.models)} models")
+        except Exception as e:
+            logger.warning(f"Antigravity backend initialization failed: {e}")
+        app.state.antigravity_backend = ag_backend
+
+        # Periodic model-list refresh
+        if ANTIGRAVITY_MODEL_REFRESH_INTERVAL > 0:
+            ag_refresh_task = asyncio.create_task(
+                ag_backend.refresh_models_periodically(
+                    app.state.http_client, ANTIGRAVITY_MODEL_REFRESH_INTERVAL
+                )
+            )
+            logger.info(
+                f"Antigravity model refresh scheduled every "
+                f"{ANTIGRAVITY_MODEL_REFRESH_INTERVAL}s"
+            )
+    
     yield
     
     # Graceful shutdown
@@ -577,6 +607,14 @@ async def lifespan(app: FastAPI):
         cc_refresh_task.cancel()
         try:
             await cc_refresh_task
+        except asyncio.CancelledError:
+            pass
+
+    # Cancel Antigravity model refresh task
+    if ag_refresh_task:
+        ag_refresh_task.cancel()
+        try:
+            await ag_refresh_task
         except asyncio.CancelledError:
             pass
     
@@ -638,6 +676,9 @@ app.include_router(openai_router)
 
 # Anthropic-compatible API: /v1/messages
 app.include_router(anthropic_router)
+
+# Antigravity OAuth: /antigravity/login, /antigravity/status
+app.include_router(antigravity_router)
 
 
 # --- Uvicorn log config ---

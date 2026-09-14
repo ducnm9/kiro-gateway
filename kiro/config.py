@@ -598,6 +598,49 @@ COMMAND_CODE_MAX_TOKENS_CAP: int = 200000
 COMMAND_CODE_MODEL_REFRESH_INTERVAL: int = int(os.getenv("COMMAND_CODE_MODEL_REFRESH_INTERVAL", "3600"))
 
 # ==================================================================================================
+# Antigravity (Google Cloud Code Assist) Configuration
+# ==================================================================================================
+
+# Enable Antigravity as an upstream provider.
+# When enabled, models prefixed with "antigravity/" route to Google Cloud Code Assist.
+ANTIGRAVITY_ENABLED: bool = os.getenv("ANTIGRAVITY_ENABLED", "false").lower() in ("true", "1", "yes")
+
+# Google OAuth refresh token for headless/remote/Docker deployments.
+# Obtain via the /antigravity/login flow on a local machine, then copy here.
+ANTIGRAVITY_REFRESH_TOKEN: str = os.getenv("ANTIGRAVITY_REFRESH_TOKEN", "")
+
+# Override the Cloud Code Assist project ID (skips automatic discovery).
+ANTIGRAVITY_PROJECT_ID: str = os.getenv("ANTIGRAVITY_PROJECT_ID", "")
+
+# Primary API endpoint for Cloud Code Assist.
+ANTIGRAVITY_BASE_URL: str = os.getenv(
+    "ANTIGRAVITY_BASE_URL", "https://cloudcode-pa.googleapis.com"
+).rstrip("/")
+
+# Fallback API endpoint (sandbox) when primary returns 403/404/5xx.
+ANTIGRAVITY_FALLBACK_URL: str = os.getenv(
+    "ANTIGRAVITY_FALLBACK_URL", "https://daily-cloudcode-pa.sandbox.googleapis.com"
+).rstrip("/")
+
+# Default max_tokens sent to Antigravity when the client does not specify a budget.
+ANTIGRAVITY_MAX_TOKENS: int = int(os.getenv("ANTIGRAVITY_MAX_TOKENS", "65536"))
+
+# Hard upper bound for max_tokens accepted by Antigravity models.
+ANTIGRAVITY_MAX_TOKENS_CAP: int = int(os.getenv("ANTIGRAVITY_MAX_TOKENS_CAP", "65536"))
+
+# Interval (seconds) between automatic model-list refreshes from Antigravity.
+# Default: 3600 (1 hour). Set to 0 to disable automatic refresh.
+ANTIGRAVITY_MODEL_REFRESH_INTERVAL: int = int(os.getenv("ANTIGRAVITY_MODEL_REFRESH_INTERVAL", "3600"))
+
+# OAuth callback port. Must be 51121 to match Google's registered redirect URI
+# for the public Antigravity desktop OAuth client.
+ANTIGRAVITY_CALLBACK_PORT: int = int(os.getenv("ANTIGRAVITY_CALLBACK_PORT", "51121"))
+
+# Default model when none specified (used as fallback).
+ANTIGRAVITY_DEFAULT_MODEL: str = os.getenv("ANTIGRAVITY_DEFAULT_MODEL", "gemini-3.7-flash")
+
+
+# ==================================================================================================
 # Application Version
 # ==================================================================================================
 

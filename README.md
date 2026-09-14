@@ -65,6 +65,7 @@ _Use Claude models from Kiro with Claude Code, OpenCode, OpenClaw, Claw Code, Co
 | 📋 **Extended model list**      | Including versioned models                     |
 | 🔐 **Smart token management**   | Automatic refresh before expiration            |
 | 🔀 **Command Code**             | Optional second upstream provider              |
+| 🚀 **Antigravity**              | Optional Google Cloud Code Assist upstream     |
 
 ---
 
@@ -563,6 +564,91 @@ interval.
 
 ---
 
+## 🚀 Antigravity (Google Cloud Code Assist)
+
+Kiro Gateway can also proxy to **Google Antigravity** (Cloud Code Assist) as an
+optional upstream. When enabled, models prefixed with `antigravity/`
+(e.g. `antigravity/gemini-3.7-flash`) route to Google's Cloud Code Assist API;
+all other models go to Kiro or Command Code as usual.
+
+This gives you access to Gemini, Claude, and GPT-OSS models through a single
+Google account. Both API surfaces (OpenAI + Anthropic), streaming and
+non-streaming, and tool calling are supported.
+
+> **Unofficial integration.** This is not affiliated with or endorsed by Google.
+> Use only with an account you are authorized to access.
+
+### Enable
+
+```bash
+# .env
+ANTIGRAVITY_ENABLED=true
+```
+
+Then authenticate with Google. There are two ways:
+
+**Option A — Browser login (local machine):**
+
+Start the gateway, then open [http://localhost:8000/antigravity/login](http://localhost:8000/antigravity/login)
+in your browser. Follow the returned `auth_url`, sign in with Google, and the
+gateway captures your credentials automatically via a temporary callback server
+on port `51121`. Check status at `/antigravity/status`.
+
+**Option B — Refresh token (Docker / remote):**
+
+Complete Option A once on a local machine, copy the refresh token, and set it:
+
+```bash
+# .env
+ANTIGRAVITY_ENABLED=true
+ANTIGRAVITY_REFRESH_TOKEN=<your google refresh token>
+```
+
+The gateway refreshes access tokens automatically before expiry.
+
+### Available models
+
+| Public model ID                 | Input        | Max output |
+| ------------------------------- | ------------ | ---------- |
+| `antigravity/gemini-3.7-flash`  | text, image  | 65,536     |
+| `antigravity/gemini-3.6-flash`  | text, image  | 65,536     |
+| `antigravity/gemini-3.5-flash`  | text, image  | 65,536     |
+| `antigravity/gemini-3.1-pro`    | text, image  | 65,535     |
+| `antigravity/claude-sonnet-4-6` | text, image  | 64,000     |
+| `antigravity/claude-opus-4-6`   | text, image  | 64,000     |
+| `antigravity/gpt-oss-120b`      | text         | 32,768     |
+
+Model availability and quota depend on your Google account.
+
+### How routing works
+
+| Model name                     | Routed to    |
+| ------------------------------ | ------------ |
+| `antigravity/gemini-3.7-flash` | Antigravity  |
+| `antigravity/claude-sonnet-4-6`| Antigravity  |
+| `deepseek/deepseek-v4-pro`     | Command Code |
+| `claude-haiku-4.5`             | Kiro         |
+
+Model names prefixed with `antigravity/` route to Antigravity; other names
+containing `/` route to Command Code; bare names route to Kiro.
+
+### Options
+
+| Env var                              | Default                                            | Description                          |
+| ------------------------------------ | -------------------------------------------------- | ------------------------------------ |
+| `ANTIGRAVITY_ENABLED`                | `false`                                            | Enable the Antigravity upstream      |
+| `ANTIGRAVITY_REFRESH_TOKEN`          | (empty)                                            | Google OAuth refresh token           |
+| `ANTIGRAVITY_PROJECT_ID`             | (auto-discovered)                                  | Override Cloud Code Assist project   |
+| `ANTIGRAVITY_BASE_URL`               | `https://cloudcode-pa.googleapis.com`              | Primary API endpoint                 |
+| `ANTIGRAVITY_FALLBACK_URL`           | `https://daily-cloudcode-pa.sandbox.googleapis.com`| Fallback endpoint                    |
+| `ANTIGRAVITY_MAX_TOKENS`             | `65536`                                            | Default max output tokens            |
+| `ANTIGRAVITY_MODEL_REFRESH_INTERVAL` | `3600`                                             | Model-list refresh interval (sec)    |
+| `ANTIGRAVITY_CALLBACK_PORT`          | `51121`                                            | OAuth callback port (fixed by Google)|
+
+Antigravity models appear in `/v1/models` when authenticated.
+
+---
+
 ## 📡 API Reference
 
 ### Endpoints
@@ -574,6 +660,8 @@ interval.
 | `/v1/models`           | GET    | List available models       |
 | `/v1/chat/completions` | POST   | OpenAI Chat Completions API |
 | `/v1/messages`         | POST   | Anthropic Messages API      |
+| `/antigravity/login`   | GET    | Start Antigravity OAuth login |
+| `/antigravity/status`  | GET    | Antigravity auth status     |
 
 ---
 
